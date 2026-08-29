@@ -1,6 +1,7 @@
 //! The single caller-independent dispatch boundary.
 
 use crate::command::Command;
+use crate::definition;
 use crate::error::LibraryError;
 use crate::format::OutputFormat;
 use crate::lifecycle;
@@ -54,13 +55,35 @@ pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, Library
             format,
             body: String::new(),
         }),
-        // Storage-backed operations are deferred to later plans. The canonical
-        // storage is not initialized in the foundation package, so these return
-        // typed errors rather than fabricating data.
-        Command::Get { id, .. } => Err(LibraryError::MissingDefinition { id }),
-        Command::Insert { .. } => Err(LibraryError::UninitializedStorage),
-        Command::Edit { .. } => Err(LibraryError::UninitializedStorage),
-        Command::Remove { .. } => Err(LibraryError::UninitializedStorage),
+        // Storage-backed definition operations (Plan 3). Each loads the
+        // canonical document, enforces strict existence semantics, and persists
+        // only through the Plan 2 atomic boundary. A missing canonical file
+        // surfaces as UninitializedStorage (never implicit init).
+        Command::Get { id, format } => {
+            let body = definition::get(root, &id, format)?;
+            Ok(DispatchOutput { format, body })
+        }
+        Command::Insert { id, value } => {
+            definition::insert(root, &id, &value)?;
+            Ok(DispatchOutput {
+                format: OutputFormat::Markdown,
+                body: String::new(),
+            })
+        }
+        Command::Edit { id, value } => {
+            definition::edit(root, &id, &value)?;
+            Ok(DispatchOutput {
+                format: OutputFormat::Markdown,
+                body: String::new(),
+            })
+        }
+        Command::Remove { id } => {
+            definition::remove(root, &id)?;
+            Ok(DispatchOutput {
+                format: OutputFormat::Markdown,
+                body: String::new(),
+            })
+        }
     }
 }
 
@@ -160,30 +183,32 @@ mod tests {
     }
 
     #[test]
-    fn get_is_missing_definition() {
+    fn get_is_missing_definition_in_uninitialized_store() {
+        // With no canonical storage, get reports UninitializedStorage (no
+        // implicit init), not MissingDefinition.
+        let root = temp_root();
         assert_eq!(
             dispatch(
                 Command::Get {
                     id: "abc".to_string(),
                     format: OutputFormat::Markdown,
                 },
-                Path::new("."),
+                &root.0,
             ),
-            Err(LibraryError::MissingDefinition {
-                id: "abc".to_string()
-            })
+            Err(LibraryError::UninitializedStorage)
         );
     }
 
     #[test]
     fn insert_requires_storage() {
+        let root = temp_root();
         assert_eq!(
             dispatch(
                 Command::Insert {
                     id: "abc".to_string(),
                     value: "x".to_string(),
                 },
-                Path::new("."),
+                &root.0,
             ),
             Err(LibraryError::UninitializedStorage)
         );
@@ -191,28 +216,30 @@ mod tests {
 
     #[test]
     fn edit_requires_storage() {
-        assert!(
+        let root = temp_root();
+        assert_eq!(
             dispatch(
                 Command::Edit {
                     id: "abc".to_string(),
                     value: "y".to_string(),
                 },
-                Path::new("."),
-            )
-            .is_err()
+                &root.0,
+            ),
+            Err(LibraryError::UninitializedStorage)
         );
     }
 
     #[test]
     fn remove_requires_storage() {
-        assert!(
+        let root = temp_root();
+        assert_eq!(
             dispatch(
                 Command::Remove {
                     id: "abc".to_string(),
                 },
-                Path::new("."),
-            )
-            .is_err()
+                &root.0,
+            ),
+            Err(LibraryError::UninitializedStorage)
         );
     }
 }

@@ -17,6 +17,8 @@
 #![forbid(unsafe_code)]
 
 mod command;
+mod definition;
+mod definition_model;
 mod dispatch;
 mod document;
 mod document_parser;
@@ -27,8 +29,11 @@ mod identity;
 mod lifecycle;
 mod parser;
 mod persistence;
+mod projection;
 
 pub use command::Command;
+pub use definition::{edit, get, insert, remove};
+pub use definition_model::Definition;
 pub use dispatch::{DispatchOutput, dispatch};
 pub use document::{DefinitionBlock, Document, Span};
 pub use document_parser::{CLOSE, OPEN_PREFIX, OPEN_SUFFIX, parse_document, serialize_document};
@@ -39,6 +44,7 @@ pub use identity::validate_id;
 pub use lifecycle::{init, init_markdown};
 pub use parser::parse_args;
 pub use persistence::{CANONICAL_DIR, CANONICAL_FILE, canonical_path, write_atomic};
+pub use projection::serialize_definition;
 
 use std::io::{self, Write};
 
