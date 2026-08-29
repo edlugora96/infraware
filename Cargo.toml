@@ -1,0 +1,38 @@
+[package]
+name = "infraware"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Passive, report-only CLI for deterministic offline repository and architecture analysis plus CLI-mediated definition management (foundation package)."
+license = "MIT OR Apache-2.0"
+
+# One package only. No [workspace] declared. No external runtime dependencies:
+# this change delivers the CLI foundation with the standard library only.
+
+[dependencies]
+
+[dev-dependencies]
+
+[[bin]]
+name = "infraware"
+path = "src/main.rs"
+
+[lib]
+name = "infraware"
+path = "src/lib.rs"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[lints.rust]
+unsafe_code = "deny"
+unreachable_pub = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+uninlined_format_args = "warn"
+semicolon_if_nothing_returned = "warn"
+implicit_clone = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
