@@ -51,10 +51,14 @@ pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, Library
                 body: String::new(),
             })
         }
-        Command::Analyze { format, .. } => Ok(DispatchOutput {
-            format,
-            body: String::new(),
-        }),
+        Command::Analyze { format, suggest } => {
+            // Realize the deferred `analyze` behavior (Plan 4): offline,
+            // deterministic, read-only scan rendered in `format`. Empty/
+            // incomplete/partially-unreadable repos still succeed with a well-
+            // formed report and status 0 (design D8).
+            let body = crate::analyze::run(root, format, suggest)?;
+            Ok(DispatchOutput { format, body })
+        }
         // Storage-backed definition operations (Plan 3). Each loads the
         // canonical document, enforces strict existence semantics, and persists
         // only through the Plan 2 atomic boundary. A missing canonical file
@@ -170,6 +174,8 @@ mod tests {
 
     #[test]
     fn analyze_empty_is_success() {
+        // Empty/incomplete analysis still succeeds (status 0) but now yields a
+        // well-formed, non-empty report body with all category keys present.
         let out = dispatch(
             Command::Analyze {
                 format: OutputFormat::Json,
@@ -179,7 +185,12 @@ mod tests {
         )
         .expect("empty analyze succeeds");
         assert_eq!(out.format, OutputFormat::Json);
-        assert!(out.body.is_empty());
+        assert!(
+            !out.body.is_empty(),
+            "analyze now emits a structured report body"
+        );
+        assert!(out.body.contains("\"languages\""));
+        assert!(out.body.contains("\"suggestions\""));
     }
 
     #[test]

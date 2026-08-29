@@ -16,6 +16,7 @@
 
 #![forbid(unsafe_code)]
 
+mod analyze;
 mod command;
 mod definition;
 mod definition_model;
