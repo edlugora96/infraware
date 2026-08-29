@@ -1,1 +1,2 @@
-- Delegate all Rust-related work to the `rust-dev` subagent.
+- Always delegate all Rust-related work to the `rust-dev` subagent.
+
