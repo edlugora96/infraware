@@ -1,2 +1,2 @@
 - Always delegate all Rust-related work to the `rust-dev` subagent.
-
+- Prefer spliting big writing execution taks into multimples `worker` or `rust-dev` subagents.
