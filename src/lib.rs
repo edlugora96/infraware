@@ -18,15 +18,27 @@
 
 mod command;
 mod dispatch;
+mod document;
+mod document_parser;
 mod error;
 mod format;
+mod guidance;
+mod identity;
+mod lifecycle;
 mod parser;
+mod persistence;
 
 pub use command::Command;
 pub use dispatch::{DispatchOutput, dispatch};
+pub use document::{DefinitionBlock, Document, Span};
+pub use document_parser::{CLOSE, OPEN_PREFIX, OPEN_SUFFIX, parse_document, serialize_document};
 pub use error::LibraryError;
 pub use format::OutputFormat;
+pub use guidance::{CATALOG, render_comments};
+pub use identity::validate_id;
+pub use lifecycle::{init, init_markdown};
 pub use parser::parse_args;
+pub use persistence::{CANONICAL_DIR, CANONICAL_FILE, canonical_path, write_atomic};
 
 use std::io::{self, Write};
 
@@ -63,8 +75,22 @@ where
         }
     };
 
-    // Stage 2: single caller-independent dispatch.
-    match dispatch(command) {
+    // Stage 2: single caller-independent dispatch. Resolve the repository root
+    // (current working directory) the filesystem-backed commands operate on.
+    let root = match std::env::current_dir() {
+        Ok(root) => root,
+        Err(error) => {
+            // I/O failure to resolve the working directory is a non-usage
+            // operational failure: diagnostics to stderr, generic non-zero status.
+            let _ = writeln!(
+                stderr,
+                "error: i/o error: failed to resolve current directory: {error}"
+            );
+            return EXIT_FAILURE;
+        }
+    };
+
+    match dispatch(command, &root) {
         Ok(output) => {
             // Structured data → stdout only. Empty bodies are harmless and keep
             // the stream contract explicit.
