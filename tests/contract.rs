@@ -66,13 +66,19 @@ fn canonical_path_for(cwd: &Path) -> PathBuf {
 
 #[test]
 fn analyze_empty_succeeds_with_status_zero_and_no_stderr() {
-    let (stdout, stderr, status) = execute(&["analyze"]);
+    // `analyze` now yields a well-formed, non-empty report body (the deferred
+    // Plan 4 behavior): status 0, diagnostics on stderr only when something is
+    // actually wrong. Run against the repository root (read-only scan).
+    let (stdout, stderr, status) = execute(&["analyze", "--format", "json"]);
     assert_eq!(status, 0);
-    assert!(stderr.is_empty(), "no diagnostic for empty analyze");
+    assert!(stderr.is_empty(), "no diagnostic for successful analyze");
     assert!(
-        stdout.is_empty(),
-        "foundation analyze has no structured body"
+        !stdout.is_empty(),
+        "analyze now emits a structured report body"
     );
+    let out = String::from_utf8(stdout).expect("utf8 stdout");
+    assert!(out.contains("\"languages\""), "report has category keys");
+    assert!(out.contains("\"suggestions\""), "report has suggestion key");
 }
 
 #[test]
@@ -106,6 +112,9 @@ fn init_succeeds_status_zero() {
 
 #[test]
 fn get_missing_definition_is_nonzero_and_diagnostic_on_stderr_only() {
+    // Isolate from the seeded repository so storage-backed commands do not read
+    // or write the canonical store under the real working directory.
+    let _guard = TempCwd::new();
     let (stdout, stderr, status) = execute(&["get", "abc"]);
     assert_ne!(status, 0);
     assert!(!stderr.is_empty(), "diagnostic must be on stderr");
@@ -114,6 +123,7 @@ fn get_missing_definition_is_nonzero_and_diagnostic_on_stderr_only() {
 
 #[test]
 fn insert_requires_storage_nonzero_stderr_only() {
+    let _guard = TempCwd::new();
     let (stdout, stderr, status) = execute(&["insert", "abc", "--value", "x"]);
     assert_ne!(status, 0);
     assert!(!stderr.is_empty());
@@ -122,6 +132,7 @@ fn insert_requires_storage_nonzero_stderr_only() {
 
 #[test]
 fn edit_requires_storage_nonzero_stderr_only() {
+    let _guard = TempCwd::new();
     let (stdout, stderr, status) = execute(&["edit", "abc", "--value", "y"]);
     assert_ne!(status, 0);
     assert!(!stderr.is_empty());
@@ -130,6 +141,7 @@ fn edit_requires_storage_nonzero_stderr_only() {
 
 #[test]
 fn remove_requires_storage_nonzero_stderr_only() {
+    let _guard = TempCwd::new();
     let (stdout, stderr, status) = execute(&["remove", "abc"]);
     assert_ne!(status, 0);
     assert!(!stderr.is_empty());
