@@ -1,5 +1,6 @@
 /target
 .pi
 .codebase-memory
+.infraware
 openspec
 docs/
