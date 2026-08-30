@@ -49,13 +49,15 @@ where
     Ok(Command::Init)
 }
 
-/// Parse `analyze [--format markdown|json|yaml] [--suggest]`.
+/// Parse `analyze [--format markdown|json|yaml] [--suggest] [--details]`.
+/// Flags are order-independent and combinable; unknown flags are rejected.
 fn parse_analyze<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
 where
     I: Iterator<Item = &'a String>,
 {
     let mut format = OutputFormat::Markdown;
     let mut suggest = false;
+    let mut details = false;
     let mut saw_format = false;
 
     while let Some(token) = iter.next() {
@@ -82,6 +84,14 @@ where
                 }
                 suggest = true;
             }
+            "--details" => {
+                if details {
+                    return Err(LibraryError::InvalidInput {
+                        message: "duplicate --details option".to_string(),
+                    });
+                }
+                details = true;
+            }
             other => {
                 return Err(LibraryError::InvalidInput {
                     message: format!("unknown option for analyze: {other}"),
@@ -90,7 +100,11 @@ where
         }
     }
 
-    Ok(Command::Analyze { format, suggest })
+    Ok(Command::Analyze {
+        format,
+        suggest,
+        details,
+    })
 }
 
 /// Parse `get <ID> [--format markdown|json|yaml]`.
@@ -249,6 +263,7 @@ mod tests {
             Ok(Command::Analyze {
                 format: OutputFormat::Markdown,
                 suggest: false,
+                details: false,
             })
         );
     }
@@ -260,6 +275,7 @@ mod tests {
             Ok(Command::Analyze {
                 format: OutputFormat::Json,
                 suggest: false,
+                details: false,
             })
         );
     }
@@ -271,6 +287,7 @@ mod tests {
             Ok(Command::Analyze {
                 format: OutputFormat::Markdown,
                 suggest: true,
+                details: false,
             })
         );
     }
@@ -282,6 +299,7 @@ mod tests {
             Ok(Command::Analyze {
                 format: OutputFormat::Yaml,
                 suggest: true,
+                details: false,
             })
         );
     }

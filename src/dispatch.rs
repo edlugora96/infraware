@@ -51,12 +51,16 @@ pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, Library
                 body: String::new(),
             })
         }
-        Command::Analyze { format, suggest } => {
-            // Realize the deferred `analyze` behavior (Plan 4): offline,
+        Command::Analyze {
+            format,
+            suggest,
+            details,
+        } => {
+            // Realize the deferred `analyze` behavior (Plan 4 + MVP2): offline,
             // deterministic, read-only scan rendered in `format`. Empty/
             // incomplete/partially-unreadable repos still succeed with a well-
-            // formed report and status 0 (design D8).
-            let body = crate::analyze::run(root, format, suggest)?;
+            // formed report and status 0 (design D8). `details` gates evidence.
+            let body = crate::analyze::run(root, format, suggest, details)?;
             Ok(DispatchOutput { format, body })
         }
         // Storage-backed definition operations (Plan 3). Each loads the
@@ -180,6 +184,7 @@ mod tests {
             Command::Analyze {
                 format: OutputFormat::Json,
                 suggest: true,
+                details: false,
             },
             Path::new("."),
         )

@@ -22,12 +22,14 @@ use crate::format::OutputFormat;
 pub enum Command {
     /// `init` — initialize canonical storage (behavior deferred to Plan 2).
     Init,
-    /// `analyze [--format ...] [--suggest]` — read-only analysis.
+    /// `analyze [--format ...] [--suggest] [--details]` — read-only analysis.
     Analyze {
         /// Effective output format (defaults to [`OutputFormat::Markdown`]).
         format: OutputFormat,
         /// Whether `--suggest` was supplied (body deferred to Plan 4).
         suggest: bool,
+        /// Whether `--details` was supplied (opt-in file-path evidence).
+        details: bool,
     },
     /// `get <ID> [--format ...]` — fetch a definition by id.
     Get {
@@ -96,10 +98,12 @@ mod tests {
             Command::Analyze {
                 format: OutputFormat::Json,
                 suggest: false,
+                details: false,
             },
             Command::Analyze {
                 format: OutputFormat::Json,
                 suggest: false,
+                details: false,
             }
         );
     }
