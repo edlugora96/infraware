@@ -15,6 +15,7 @@ pub(crate) mod report;
 pub(crate) mod serialize;
 pub(crate) mod signals;
 pub(crate) mod suggest;
+pub(crate) mod technology;
 pub(crate) mod traversal;
 
 use crate::analyze::report::{
