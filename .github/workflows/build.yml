@@ -1,0 +1,44 @@
+name: build
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: darwin-arm64
+            os: macos-latest
+            rust_target: aarch64-apple-darwin
+          - target: darwin-x64
+            os: macos-latest
+            rust_target: x86_64-apple-darwin
+          - target: linux-x64
+            os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+          - target: win32-x64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+      - run: cargo build --release --target ${{ matrix.rust_target }}
+        shell: bash
+      - run: |
+          set -e
+          mkdir -p binaries/${{ matrix.target }}
+          if [ "${{ matrix.target }}" = "win32-x64" ]; then
+            cp target/${{ matrix.rust_target }}/release/infraware.exe binaries/${{ matrix.target }}/infraware.exe
+          else
+            cp target/${{ matrix.rust_target }}/release/infraware binaries/${{ matrix.target }}/infraware
+          fi
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: binaries/${{ matrix.target }}/

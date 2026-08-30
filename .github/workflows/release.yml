@@ -1,0 +1,60 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate version and targets
+        run: |
+          set -e
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$VERSION" != "$PKG_VERSION" ]; then
+            echo "Version mismatch Cargo.toml ($VERSION) vs package.json ($PKG_VERSION)"; exit 1
+          fi
+          TAG=${GITHUB_REF#refs/tags/v}
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "Tag v$TAG does not match version $VERSION"; exit 1
+          fi
+          for t in darwin-arm64 darwin-x64 linux-x64 win32-x64; do
+            if [ "$t" = "win32-x64" ]; then
+              test -f "binaries/$t/infraware.exe" || { echo "Missing $t"; exit 1; }
+            else
+              test -f "binaries/$t/infraware" || { echo "Missing $t"; exit 1; }
+            fi
+          done
+  release:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate SHA256 checksums
+        run: |
+          set -e
+          sha256sum binaries/darwin-arm64/infraware > checksums.txt
+          sha256sum binaries/darwin-x64/infraware >> checksums.txt
+          sha256sum binaries/linux-x64/infraware >> checksums.txt
+          sha256sum binaries/win32-x64/infraware.exe >> checksums.txt
+          cat checksums.txt
+      - name: Verify checksums
+        run: |
+          set -e
+          sha256sum -c checksums.txt
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            binaries/darwin-arm64/infraware
+            binaries/darwin-x64/infraware
+            binaries/linux-x64/infraware
+            binaries/win32-x64/infraware.exe
+            checksums.txt
