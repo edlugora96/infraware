@@ -46,6 +46,26 @@ pub(crate) fn select_suggestions(groups: &SignalGroups) -> Vec<String> {
     );
     add_if(groups.sensitive, &["optional", "risk", "constraint"]);
 
+    // Integrate curated suggestion IDs. When any signal is present, surface
+    // the curated IDs deterministically alongside path-analysis selections.
+    // If no signals at all, emit nothing (preserve empty-repo empty behavior).
+    let has_any = !groups.languages.is_empty()
+        || !groups.manifests.is_empty()
+        || !groups.linters.is_empty()
+        || !groups.tests.is_empty()
+        || !groups.containers.is_empty()
+        || !groups.cicd.is_empty()
+        || !groups.entry_points.is_empty()
+        || groups.sensitive;
+    // Ensure the curated documentation line is always suggested when any
+    // signal is present, providing context/constraints/decisions/risks.
+    if has_any {
+        for (i, line) in CATALOG.iter().enumerate() {
+            if line.contains("context") && line.contains("constraints") {
+                wanted.insert(i);
+            }
+        }
+    }
     let mut out: Vec<String> = wanted.into_iter().map(|i| CATALOG[i].to_string()).collect();
     out.sort();
     out
@@ -89,5 +109,49 @@ mod tests {
         let sugg = select_suggestions(&g);
         let set: BTreeSet<&String> = sugg.iter().collect();
         assert_eq!(sugg.len(), set.len(), "no duplicates in suggestions");
+    }
+
+    #[test]
+    fn curated_ids_surface_when_signals_present() {
+        let mut g = SignalGroups::default();
+        g.manifests.insert("cargo".to_string());
+        let sugg = select_suggestions(&g);
+        let joined = sugg.join("\n");
+        assert!(
+            joined.contains("context") && joined.contains("constraints"),
+            "curated line with context/constraints must be present"
+        );
+    }
+
+    #[test]
+    fn curated_ids_absent_for_empty_signals() {
+        let g = SignalGroups::default();
+        let sugg = select_suggestions(&g);
+        assert!(sugg.is_empty(), "empty signals yield no curated injection");
+    }
+
+    #[test]
+    fn suggestions_are_sorted_deterministic() {
+        let mut g = SignalGroups::default();
+        g.cicd.insert("github-actions".to_string());
+        g.languages.insert("rust".to_string());
+        g.containers.insert("dockerfile".to_string());
+        let a = select_suggestions(&g);
+        let b = select_suggestions(&g);
+        assert_eq!(a, b);
+        let mut sorted = a.clone();
+        sorted.sort();
+        assert_eq!(a, sorted, "output must be sorted");
+    }
+
+    #[test]
+    fn path_relevance_more_signals_yield_more_or_equal_suggestions() {
+        let empty = SignalGroups::default();
+        let e = select_suggestions(&empty);
+        let mut populated = SignalGroups::default();
+        populated.manifests.insert("cargo".to_string());
+        populated.cicd.insert("github-actions".to_string());
+        let p = select_suggestions(&populated);
+        assert!(p.len() > e.len());
     }
 }

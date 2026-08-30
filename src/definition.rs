@@ -108,6 +108,22 @@ pub fn edit(root: &Path, id: &str, value: &str) -> Result<(), LibraryError> {
     }
 }
 
+/// List definition IDs (read-only, ID-only).
+///
+/// Loads the canonical document without mutation, deduplicates and sorts IDs
+/// deterministically, and renders via the existing projection conventions.
+/// Returns `UninitializedStorage` if storage is absent (no auto-init) and
+/// succeeds with an empty collection for an initialized empty document.
+pub(crate) fn list(root: &Path, format: OutputFormat) -> Result<String, LibraryError> {
+    let doc = load_document(root)?;
+    let mut ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for def in doc.definitions() {
+        ids.insert(def.id.clone());
+    }
+    let sorted: Vec<String> = ids.into_iter().collect();
+    projection::serialize_id_list(&sorted, format)
+}
+
 /// Remove a definition block by id.
 ///
 /// Rejects an absent id with [`LibraryError::MissingDefinition`]. Only the
@@ -294,5 +310,67 @@ mod tests {
         assert_eq!(err, LibraryError::UninitializedStorage);
         // No .infraware directory or file should exist.
         assert!(!root.0.join(".infraware").exists());
+    }
+
+    #[test]
+    fn list_returns_sorted_ids_without_bodies() {
+        let root = temp_root();
+        init_storage(&root.0);
+        insert(&root.0, "zeta", "body zeta").unwrap();
+        insert(&root.0, "alpha", "body alpha").unwrap();
+        let json = list(&root.0, OutputFormat::Json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let ids: Vec<String> = v["ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(ids, vec!["alpha", "keep", "zeta"]);
+        assert!(!json.contains("body zeta"));
+        let md = list(&root.0, OutputFormat::Markdown).unwrap();
+        assert!(md.contains("- alpha\n"));
+        assert!(!md.contains("body"));
+    }
+
+    #[test]
+    fn list_empty_initialized_is_empty_per_format() {
+        let root = temp_root();
+        let dir = root.0.join(".infraware");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("ARCHITECTURE.md"), "# Architecture\n").unwrap();
+        assert!(list(&root.0, OutputFormat::Markdown).unwrap().is_empty());
+        let j = list(&root.0, OutputFormat::Json).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&j).unwrap();
+        assert_eq!(v["ids"].as_array().unwrap().len(), 0);
+        let y = list(&root.0, OutputFormat::Yaml).unwrap();
+        let vy: serde_yaml::Value = serde_yaml::from_str(&y).unwrap();
+        assert_eq!(vy["ids"].as_sequence().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn list_uninitialized_is_error_and_no_mutation() {
+        let root = temp_root();
+        let err = list(&root.0, OutputFormat::Markdown).unwrap_err();
+        assert_eq!(err, LibraryError::UninitializedStorage);
+        assert!(!root.0.join(".infraware").exists());
+        assert_eq!(
+            list(&root.0, OutputFormat::Json).unwrap_err(),
+            LibraryError::UninitializedStorage
+        );
+        assert!(!root.0.join(".infraware").exists());
+    }
+
+    #[test]
+    fn list_dedupes_and_is_read_only() {
+        let root = temp_root();
+        init_storage(&root.0);
+        // Insert a few then verify list doesn't mutate file.
+        insert(&root.0, "b", "vb").unwrap();
+        let before = doc_text(&root.0);
+        let out1 = list(&root.0, OutputFormat::Json).unwrap();
+        let out2 = list(&root.0, OutputFormat::Json).unwrap();
+        assert_eq!(out1, out2);
+        assert_eq!(doc_text(&root.0), before, "list must not mutate");
     }
 }

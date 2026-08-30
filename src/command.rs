@@ -15,6 +15,7 @@ use crate::format::OutputFormat;
 /// - `insert <ID> --value <TEXT>`
 /// - `edit <ID> --value <TEXT>`
 /// - `remove <ID>`
+/// - `list [--format markdown|json|yaml]`
 ///
 /// `analyze --suggest` is accepted here; the suggestion body is deferred to a
 /// later plan and does not change this shape.
@@ -57,6 +58,11 @@ pub enum Command {
         /// Target definition id.
         id: String,
     },
+    /// `list [--format markdown|json|yaml]` — list definition IDs (read-only).
+    List {
+        /// Effective output format (defaults to [`OutputFormat::Markdown`]).
+        format: OutputFormat,
+    },
 }
 
 impl Command {
@@ -69,6 +75,7 @@ impl Command {
             Command::Insert { .. } => "insert",
             Command::Edit { .. } => "edit",
             Command::Remove { .. } => "remove",
+            Command::List { .. } => "list",
         }
     }
 }
@@ -117,6 +124,49 @@ mod tests {
             Command::Remove {
                 id: "abc".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn list_default_format_is_markdown() {
+        assert_eq!(
+            Command::List {
+                format: OutputFormat::Markdown
+            },
+            Command::List {
+                format: OutputFormat::default()
+            }
+        );
+    }
+
+    #[test]
+    fn list_carries_explicit_format() {
+        assert_eq!(
+            Command::List {
+                format: OutputFormat::Json
+            },
+            Command::List {
+                format: OutputFormat::Json
+            }
+        );
+        assert_eq!(
+            Command::List {
+                format: OutputFormat::Yaml
+            },
+            Command::List {
+                format: OutputFormat::Yaml
+            }
+        );
+    }
+
+    #[test]
+    fn list_name_is_list() {
+        assert_eq!(
+            Command::List {
+                format: OutputFormat::Markdown
+            }
+            .name(),
+            "list"
         );
     }
 }

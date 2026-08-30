@@ -92,6 +92,10 @@ pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, Library
                 body: String::new(),
             })
         }
+        Command::List { format } => {
+            let body = definition::list(root, format)?;
+            Ok(DispatchOutput { format, body })
+        }
     }
 }
 

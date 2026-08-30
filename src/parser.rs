@@ -29,6 +29,7 @@ pub fn parse_args(argv: &[String]) -> Result<Command, LibraryError> {
         "insert" => parse_insert(&mut iter),
         "edit" => parse_edit(&mut iter),
         "remove" => parse_remove(&mut iter),
+        "list" => parse_list(&mut iter),
         // `set`/`rm` and any other token are unknown commands, never aliases.
         other => Err(LibraryError::InvalidInput {
             message: format!("unknown command: {other}"),
@@ -225,6 +226,39 @@ where
     Ok(value.clone())
 }
 
+/// Parse `list [--format markdown|json|yaml]`.
+fn parse_list<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
+where
+    I: Iterator<Item = &'a String>,
+{
+    let mut format = OutputFormat::Markdown;
+    let mut saw_format = false;
+    while let Some(token) = iter.next() {
+        match token.as_str() {
+            "--format" => {
+                if saw_format {
+                    return Err(LibraryError::InvalidInput {
+                        message: "duplicate --format option".to_string(),
+                    });
+                }
+                saw_format = true;
+                let value = iter.next().ok_or_else(|| LibraryError::InvalidInput {
+                    message: "--format requires a value".to_string(),
+                })?;
+                format = OutputFormat::parse(value).ok_or_else(|| LibraryError::InvalidInput {
+                    message: format!("invalid --format value: {value}"),
+                })?;
+            }
+            other => {
+                return Err(LibraryError::InvalidInput {
+                    message: format!("unknown option for list: {other}"),
+                });
+            }
+        }
+    }
+    Ok(Command::List { format })
+}
+
 /// Parse `remove <ID>`.
 fn parse_remove<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
 where
@@ -416,5 +450,66 @@ mod tests {
     #[test]
     fn reject_extra_argument_get() {
         assert!(parse_args(&args(&["get", "abc", "extra"])).is_err());
+    }
+
+    #[test]
+    fn parse_list_defaults_markdown() {
+        assert_eq!(
+            parse_args(&args(&["list"])),
+            Ok(Command::List {
+                format: OutputFormat::Markdown
+            })
+        );
+    }
+
+    #[test]
+    fn parse_list_format_json() {
+        assert_eq!(
+            parse_args(&args(&["list", "--format", "json"])),
+            Ok(Command::List {
+                format: OutputFormat::Json
+            })
+        );
+    }
+
+    #[test]
+    fn parse_list_format_yaml() {
+        assert_eq!(
+            parse_args(&args(&["list", "--format", "yaml"])),
+            Ok(Command::List {
+                format: OutputFormat::Yaml
+            })
+        );
+    }
+
+    #[test]
+    fn reject_list_details() {
+        assert!(parse_args(&args(&["list", "--details"])).is_err());
+    }
+
+    #[test]
+    fn reject_list_unknown_option() {
+        assert!(parse_args(&args(&["list", "--verbose"])).is_err());
+        assert!(parse_args(&args(&["list", "--suggest"])).is_err());
+    }
+
+    #[test]
+    fn reject_list_duplicate_format() {
+        assert!(parse_args(&args(&["list", "--format", "json", "--format", "yaml"])).is_err());
+    }
+
+    #[test]
+    fn reject_list_invalid_format() {
+        assert!(parse_args(&args(&["list", "--format", "xml"])).is_err());
+    }
+
+    #[test]
+    fn reject_list_extra_positional() {
+        assert!(parse_args(&args(&["list", "extra"])).is_err());
+    }
+
+    #[test]
+    fn reject_add_command() {
+        assert!(parse_args(&args(&["add", "x", "--value", "y"])).is_err());
     }
 }
