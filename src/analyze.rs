@@ -63,7 +63,7 @@ pub(crate) fn run(
     };
 
     let walked = traversal::walk(&root)?;
-    let mut report = aggregate(&walked);
+    let mut report = aggregate(&walked, details);
     if suggest {
         let groups = collect_groups(&walked);
         let texts = suggest::select_suggestions(&groups);
@@ -77,7 +77,7 @@ pub(crate) fn run(
 }
 
 /// Aggregate the walked entries into a shared [`Report`].
-fn aggregate(walked: &WalkResult) -> Report {
+fn aggregate(walked: &WalkResult, details: bool) -> Report {
     let mut report = Report::new();
 
     // Group evidence files by signal name for stable, deduplicated aggregation.
@@ -146,6 +146,71 @@ fn aggregate(walked: &WalkResult) -> Report {
             reason: l.reason.clone(),
         })
         .collect();
+
+    // Technology patterns (mvp2) - path-only deterministic, zero intermediate
+    // allocations via iterators (Chapter 3).
+    {
+        let collected = technology::collect_patterns(&walked.entries);
+        // BTreeSet keys are already sorted; collect without extra sort where possible.
+        let structure_vec: Vec<String> = collected.structure.into_iter().collect();
+        let cicd_vec: Vec<String> = collected.cicd.keys().cloned().collect();
+        let infra_vec: Vec<String> = collected.infra.keys().cloned().collect();
+        let db_vec: Vec<String> = collected.db.keys().cloned().collect();
+        let shape = if walked.entries.is_empty() {
+            "undetermined".to_string()
+        } else {
+            technology::project_shape(
+                collected.workspace_found,
+                collected.group_dir_found,
+                &collected.manifest_dirs,
+            )
+        };
+        report.technology_patterns.structure = structure_vec;
+        report.technology_patterns.project_shape = shape;
+        report.technology_patterns.cicd = cicd_vec;
+        report.technology_patterns.infra = infra_vec;
+        report.technology_patterns.db = db_vec;
+        if details {
+            let mut evidence: BTreeMap<String, Vec<FileRef>> = BTreeMap::new();
+            let mut struct_ev: BTreeSet<String> = BTreeSet::new();
+            for e in &walked.entries {
+                if technology::match_structure(&e.rel, e.is_dir).is_some() {
+                    struct_ev.insert(e.rel.clone());
+                }
+            }
+            if !struct_ev.is_empty() {
+                evidence.insert(
+                    "structure".to_string(),
+                    struct_ev.into_iter().map(|p| FileRef { path: p }).collect(),
+                );
+            }
+            for (k, set) in collected.cicd {
+                evidence.insert(
+                    format!("cicd:{k}"),
+                    set.into_iter().map(|p| FileRef { path: p }).collect(),
+                );
+            }
+            for (k, set) in collected.infra {
+                evidence.insert(
+                    format!("infra:{k}"),
+                    set.into_iter().map(|p| FileRef { path: p }).collect(),
+                );
+            }
+            for (k, set) in collected.db {
+                evidence.insert(
+                    format!("db:{k}"),
+                    set.into_iter().map(|p| FileRef { path: p }).collect(),
+                );
+            }
+            report.technology_patterns.evidence = if evidence.is_empty() {
+                None
+            } else {
+                Some(evidence)
+            };
+        } else {
+            report.technology_patterns.evidence = None;
+        }
+    }
 
     report
 }

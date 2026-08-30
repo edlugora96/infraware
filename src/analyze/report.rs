@@ -104,6 +104,25 @@ pub(crate) struct LimitationEntry {
     pub(crate) reason: String,
 }
 
+/// Technology pattern aggregates (mvp2-technology-pattern-detection).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct TechnologyPatterns {
+    /// Conventional structure directories found.
+    pub(crate) structure: Vec<String>,
+    /// Project shape: monorepo | single-project | undetermined
+    pub(crate) project_shape: String,
+    /// CI/CD systems detected.
+    pub(crate) cicd: Vec<String>,
+    /// Infrastructure tools detected.
+    pub(crate) infra: Vec<String>,
+    /// DB/ORM/migration markers detected.
+    pub(crate) db: Vec<String>,
+    /// Evidence paths per category (gated by details)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) evidence: Option<std::collections::BTreeMap<String, Vec<FileRef>>>,
+}
+
 /// The aggregated repository analysis report.
 ///
 /// Serialized once and rendered by three serializers (design D6). All
@@ -131,6 +150,21 @@ pub(crate) struct Report {
     pub(crate) limitations: Vec<LimitationEntry>,
     /// Optional `--suggest` catalog guidance lines.
     pub(crate) suggestions: Vec<SuggestionEntry>,
+    /// Technology pattern aggregates.
+    pub(crate) technology_patterns: TechnologyPatterns,
+}
+
+impl Default for TechnologyPatterns {
+    fn default() -> Self {
+        Self {
+            structure: vec![],
+            project_shape: "undetermined".to_string(),
+            cicd: vec![],
+            infra: vec![],
+            db: vec![],
+            evidence: None,
+        }
+    }
 }
 
 impl Report {
@@ -157,6 +191,15 @@ impl Report {
     /// Called once before serialization to guarantee byte-stable output.
     pub(crate) fn sort_all(&mut self) {
         self.languages.sort();
+        self.technology_patterns.structure.sort();
+        self.technology_patterns.cicd.sort();
+        self.technology_patterns.infra.sort();
+        self.technology_patterns.db.sort();
+        if let Some(ev) = &mut self.technology_patterns.evidence {
+            for v in ev.values_mut() {
+                v.sort();
+            }
+        }
         self.manifests.sort();
         self.linters.sort();
         self.tests.sort();
