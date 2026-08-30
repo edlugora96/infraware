@@ -5,56 +5,108 @@ on:
 permissions:
   contents: read
 jobs:
-  validate:
-    runs-on: ubuntu-latest
+  build:
     permissions:
       contents: read
+    strategy:
+      matrix:
+        include:
+          - target: darwin-arm64
+            os: macos-latest
+            rust_target: aarch64-apple-darwin
+          - target: darwin-x64
+            os: macos-latest
+            rust_target: x86_64-apple-darwin
+          - target: linux-x64
+            os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+          - target: win32-x64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Validate version and targets
-        run: |
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+      - run: cargo build --release --target ${{ matrix.rust_target }}
+        shell: bash
+      - run: |
           set -e
-          VERSION=$(grep '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          if [ "$VERSION" != "$PKG_VERSION" ]; then
-            echo "Version mismatch Cargo.toml ($VERSION) vs package.json ($PKG_VERSION)"; exit 1
+          mkdir -p out/${{ matrix.target }}
+          if [ "${{ matrix.target }}" = "win32-x64" ]; then
+            cp target/${{ matrix.rust_target }}/release/infraware.exe out/${{ matrix.target }}/infraware.exe
+          else
+            cp target/${{ matrix.rust_target }}/release/infraware out/${{ matrix.target }}/infraware
           fi
-          TAG=${GITHUB_REF#refs/tags/v}
-          if [ "$TAG" != "$VERSION" ]; then
-            echo "Tag v$TAG does not match version $VERSION"; exit 1
-          fi
-          for t in darwin-arm64 darwin-x64 linux-x64 win32-x64; do
-            if [ "$t" = "win32-x64" ]; then
-              test -f "binaries/$t/infraware.exe" || { echo "Missing $t"; exit 1; }
-            else
-              test -f "binaries/$t/infraware" || { echo "Missing $t"; exit 1; }
-            fi
-          done
-  release:
-    needs: validate
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: out/${{ matrix.target }}/
+  publish:
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Generate SHA256 checksums
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Validate versions
         run: |
           set -e
-          sha256sum binaries/darwin-arm64/infraware > checksums.txt
-          sha256sum binaries/darwin-x64/infraware >> checksums.txt
-          sha256sum binaries/linux-x64/infraware >> checksums.txt
-          sha256sum binaries/win32-x64/infraware.exe >> checksums.txt
-          cat checksums.txt
-      - name: Verify checksums
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$VERSION" != "$PKG_VERSION" ]; then echo "Version mismatch"; exit 1; fi
+          TAG=${GITHUB_REF#refs/tags/v}
+          if [ "$TAG" != "$VERSION" ]; then echo "Tag mismatch"; exit 1; fi
+      - uses: actions/download-artifact@v4
+        with:
+          path: _artifacts
+      - name: Assemble package
         run: |
           set -e
-          sha256sum -c checksums.txt
+          rm -rf _pkg && mkdir -p _pkg/bin _pkg/scripts _pkg/binaries/darwin-arm64 _pkg/binaries/darwin-x64 _pkg/binaries/linux-x64 _pkg/binaries/win32-x64
+          cp package.json _pkg/ && cp README.md _pkg/README.md 2>/dev/null || true
+          cp -r bin _pkg/bin 2>/dev/null; cp bin/infraware.js _pkg/bin/infraware.js 2>/dev/null || true
+          cp scripts/verify-binaries.js _pkg/scripts/verify-binaries.js
+          cp _artifacts/darwin-arm64/infraware _pkg/binaries/darwin-arm64/infraware
+          cp _artifacts/darwin-x64/infraware _pkg/binaries/darwin-x64/infraware
+          cp _artifacts/linux-x64/infraware _pkg/binaries/linux-x64/infraware
+          cp _artifacts/win32-x64/infraware.exe _pkg/binaries/win32-x64/infraware.exe
+          chmod +x _pkg/bin/infraware.js
+          chmod +x _pkg/binaries/darwin-arm64/infraware _pkg/binaries/darwin-x64/infraware _pkg/binaries/linux-x64/infraware
+          echo "Assembled:" && find _pkg -type f | sort
+      - name: Validate package
+        run: |
+          set -e
+          node _pkg/scripts/verify-binaries.js
+          (cd _pkg && npm pack --dry-run 2>&1 | tee pack.log; cat pack.log)
+          sha256sum _pkg/binaries/*/* > checksums.txt; cat checksums.txt; sha256sum -c checksums.txt
+      - name: Prepare release assets
+        run: |
+          set -e
+          mkdir -p dist
+          cp _pkg/binaries/darwin-arm64/infraware dist/infraware-darwin-arm64
+          cp _pkg/binaries/darwin-x64/infraware dist/infraware-darwin-x64
+          cp _pkg/binaries/linux-x64/infraware dist/infraware-linux-x64
+          cp _pkg/binaries/win32-x64/infraware.exe dist/infraware-win32-x64.exe
+          (cd dist && sha256sum infraware-* > checksums.txt && cat checksums.txt && sha256sum -c checksums.txt)
+          ls -lh dist/
+      - name: Publish to npmjs
+        run: npm publish _pkg --access restricted
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            binaries/darwin-arm64/infraware
-            binaries/darwin-x64/infraware
-            binaries/linux-x64/infraware
-            binaries/win32-x64/infraware.exe
-            checksums.txt
+            dist/infraware-darwin-arm64
+            dist/infraware-darwin-x64
+            dist/infraware-linux-x64
+            dist/infraware-win32-x64.exe
+            dist/checksums.txt
+          generate_release_notes: true
