@@ -12,7 +12,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Validate version and targets
         run: |
           set -euo pipefail
@@ -57,7 +57,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Generate SHA256 checksums
         run: |
           set -euo pipefail
@@ -72,12 +72,29 @@ jobs:
         run: |
           set -euo pipefail
           sha256sum -c checksums.txt
+      - name: Stage release assets with unique names
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp binaries/darwin-arm64/infraware dist/infraware-darwin-arm64
+          cp binaries/darwin-x64/infraware dist/infraware-darwin-x64
+          cp binaries/linux-x64/infraware dist/infraware-linux-x64
+          cp binaries/win32-x64/infraware.exe dist/infraware-win32-x64.exe
+          ls -lh dist/
+          # Preserve root manifest validation for bundled files (fail closed)
+          sha256sum -c checksums.txt
+          # Generate dist manifest with unique basenames and verify fail-closed
+          (cd dist && sha256sum infraware-darwin-arm64 infraware-darwin-x64 infraware-linux-x64 infraware-win32-x64.exe | sort > checksums.txt)
+          cat dist/checksums.txt
+          (cd dist && sha256sum -c checksums.txt)
+          echo "Staged assets:"
+          sha256sum dist/*
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            binaries/darwin-arm64/infraware
-            binaries/darwin-x64/infraware
-            binaries/linux-x64/infraware
-            binaries/win32-x64/infraware.exe
-            checksums.txt
+            dist/infraware-darwin-arm64
+            dist/infraware-darwin-x64
+            dist/infraware-linux-x64
+            dist/infraware-win32-x64.exe
+            dist/checksums.txt
