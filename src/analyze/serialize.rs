@@ -4,62 +4,386 @@
 //! `serde_json` (JSON), `serde_yaml` (YAML), and a hand-written Markdown
 //! renderer over the same struct. All collections are already sorted by the
 //! aggregation stage, guaranteeing byte-stable, format-parity output.
+//! MVP2: default is aggregate-only; `--details` adds sorted supporting file paths.
 
 use crate::analyze::report::Report;
 use crate::error::LibraryError;
 use crate::format::OutputFormat;
+use serde_json::{Map, Value};
 
 /// Render `report` in the requested format.
 ///
-/// Returns the structured body destined for stdout. Never returns an error for
-/// a well-formed report (serde failures are mapped to `LibraryError::Io`).
-pub(crate) fn render(report: &Report, format: OutputFormat) -> Result<String, LibraryError> {
+/// `details` gates supporting file-path evidence. When false, aggregates only
+/// are emitted (no per-entry file arrays). When true, sorted file paths are
+/// included alongside aggregates.
+pub(crate) fn render(
+    report: &Report,
+    format: OutputFormat,
+    details: bool,
+) -> Result<String, LibraryError> {
     match format {
-        OutputFormat::Json => serde_json::to_string(report).map_err(|e| LibraryError::Io {
-            message: format!("failed to serialize json: {e}"),
-        }),
-        OutputFormat::Yaml => serde_yaml::to_string(report).map_err(|e| LibraryError::Io {
-            message: format!("failed to serialize yaml: {e}"),
-        }),
-        OutputFormat::Markdown => Ok(render_markdown(report)),
+        OutputFormat::Json => {
+            let v = to_value(report, details);
+            serde_json::to_string(&v).map_err(|e| LibraryError::Io {
+                message: format!("failed to serialize json: {e}"),
+            })
+        }
+        OutputFormat::Yaml => {
+            let v = to_value(report, details);
+            serde_yaml::to_string(&v).map_err(|e| LibraryError::Io {
+                message: format!("failed to serialize yaml: {e}"),
+            })
+        }
+        OutputFormat::Markdown => Ok(render_markdown(report, details)),
     }
+}
+
+/// Build a serde Value from the report, conditionally including evidence.
+fn to_value(report: &Report, details: bool) -> Value {
+    let total_classified: usize = report.languages.iter().map(|e| e.files.len()).sum();
+    // Helper to build language objects with proportion note.
+    let languages: Vec<Value> = report
+        .languages
+        .iter()
+        .map(|e| {
+            let mut m = Map::new();
+            m.insert("name".to_string(), Value::String(e.name.clone()));
+            let count = e.files.len();
+            m.insert("file_count".to_string(), Value::Number(count.into()));
+            // file-count approximation proportion over classified files only
+            let proportion = if total_classified > 0 {
+                count as f64 / total_classified as f64
+            } else {
+                0.0
+            };
+            // Round to 4 decimal places for determinism
+            let proportion_rounded = (proportion * 10000.0).round() / 10000.0;
+            m.insert(
+                "proportion_approx".to_string(),
+                Value::Number(
+                    serde_json::Number::from_f64(proportion_rounded)
+                        .expect("proportion_approx is finite 0.0..=1.0"),
+                ),
+            );
+            m.insert(
+                "proportion_note".to_string(),
+                Value::String("file-count approximation, not Linguist byte analysis".to_string()),
+            );
+            if details {
+                let files: Vec<Value> = e
+                    .files
+                    .iter()
+                    .map(|f| Value::String(f.path.clone()))
+                    .collect();
+                m.insert("files".to_string(), Value::Array(files));
+            }
+            Value::Object(m)
+        })
+        .collect();
+
+    let manifests: Vec<Value> = report
+        .manifests
+        .iter()
+        .map(|e| {
+            let mut m = Map::new();
+            m.insert("kind".to_string(), Value::String(e.kind.clone()));
+            m.insert(
+                "file_count".to_string(),
+                Value::Number(e.files.len().into()),
+            );
+            if details {
+                let files: Vec<Value> = e
+                    .files
+                    .iter()
+                    .map(|f| Value::String(f.path.clone()))
+                    .collect();
+                m.insert("files".to_string(), Value::Array(files));
+            }
+            Value::Object(m)
+        })
+        .collect();
+    let linters: Vec<Value> = report
+        .linters
+        .iter()
+        .map(|e| {
+            let mut m = Map::new();
+            m.insert("name".to_string(), Value::String(e.name.clone()));
+            m.insert(
+                "file_count".to_string(),
+                Value::Number(e.files.len().into()),
+            );
+            if details {
+                let files: Vec<Value> = e
+                    .files
+                    .iter()
+                    .map(|f| Value::String(f.path.clone()))
+                    .collect();
+                m.insert("files".to_string(), Value::Array(files));
+            }
+            Value::Object(m)
+        })
+        .collect();
+    let tests: Vec<Value> = report
+        .tests
+        .iter()
+        .map(|e| {
+            let mut m = Map::new();
+            m.insert("name".to_string(), Value::String(e.name.clone()));
+            m.insert(
+                "file_count".to_string(),
+                Value::Number(e.files.len().into()),
+            );
+            if details {
+                let files: Vec<Value> = e
+                    .files
+                    .iter()
+                    .map(|f| Value::String(f.path.clone()))
+                    .collect();
+                m.insert("files".to_string(), Value::Array(files));
+            }
+            Value::Object(m)
+        })
+        .collect();
+    let containers: Vec<Value> = report
+        .containers
+        .iter()
+        .map(|e| {
+            let mut m = Map::new();
+            m.insert("kind".to_string(), Value::String(e.kind.clone()));
+            m.insert(
+                "file_count".to_string(),
+                Value::Number(e.files.len().into()),
+            );
+            if details {
+                let files: Vec<Value> = e
+                    .files
+                    .iter()
+                    .map(|f| Value::String(f.path.clone()))
+                    .collect();
+                m.insert("files".to_string(), Value::Array(files));
+            }
+            Value::Object(m)
+        })
+        .collect();
+    let cicd: Vec<Value> = report
+        .cicd
+        .iter()
+        .map(|e| {
+            let mut m = Map::new();
+            m.insert("name".to_string(), Value::String(e.name.clone()));
+            m.insert(
+                "file_count".to_string(),
+                Value::Number(e.files.len().into()),
+            );
+            if details {
+                let files: Vec<Value> = e
+                    .files
+                    .iter()
+                    .map(|f| Value::String(f.path.clone()))
+                    .collect();
+                m.insert("files".to_string(), Value::Array(files));
+            }
+            Value::Object(m)
+        })
+        .collect();
+    let entry_points: Vec<Value> = report
+        .entry_points
+        .iter()
+        .map(|e| {
+            let mut m = Map::new();
+            m.insert("kind".to_string(), Value::String(e.kind.clone()));
+            m.insert(
+                "file_count".to_string(),
+                Value::Number(e.files.len().into()),
+            );
+            if details {
+                let files: Vec<Value> = e
+                    .files
+                    .iter()
+                    .map(|f| Value::String(f.path.clone()))
+                    .collect();
+                m.insert("files".to_string(), Value::Array(files));
+            }
+            Value::Object(m)
+        })
+        .collect();
+
+    // Sensitive files are file-level evidence and therefore gated by `details` per the
+    // aggregate-first contract (spec: Default SHALL NOT contain per-language/
+    // per-technology/per-pattern evidence arrays). They mirror the Markdown gating
+    // where default shows only a count summary.
+    let sensitive_files = if details {
+        let v: Vec<Value> = report
+            .sensitive_files
+            .iter()
+            .map(|e| {
+                let mut m = Map::new();
+                m.insert("path".to_string(), Value::String(e.path.clone()));
+                m.insert("signal".to_string(), Value::String(e.signal.clone()));
+                Value::Object(m)
+            })
+            .collect();
+        Value::Array(v)
+    } else {
+        // Aggregate-only: no per-file objects; keep key present as empty array for parity.
+        Value::Array(vec![])
+    };
+
+    let limitations: Vec<Value> = report
+        .limitations
+        .iter()
+        .map(|e| {
+            let mut m = Map::new();
+            m.insert("reason".to_string(), Value::String(e.reason.clone()));
+            Value::Object(m)
+        })
+        .collect();
+    let suggestions: Vec<Value> = report
+        .suggestions
+        .iter()
+        .map(|e| {
+            let mut m = Map::new();
+            m.insert("text".to_string(), Value::String(e.text.clone()));
+            Value::Object(m)
+        })
+        .collect();
+
+    let mut root = Map::new();
+    root.insert("languages".to_string(), Value::Array(languages));
+    root.insert("manifests".to_string(), Value::Array(manifests));
+    root.insert("linters".to_string(), Value::Array(linters));
+    root.insert("tests".to_string(), Value::Array(tests));
+    root.insert("containers".to_string(), Value::Array(containers));
+    root.insert("cicd".to_string(), Value::Array(cicd));
+    root.insert("entry_points".to_string(), Value::Array(entry_points));
+    root.insert("sensitive_files".to_string(), sensitive_files);
+    root.insert("limitations".to_string(), Value::Array(limitations));
+    root.insert("suggestions".to_string(), Value::Array(suggestions));
+    Value::Object(root)
 }
 
 /// Hand-written Markdown renderer over the same `Report` struct.
 ///
-/// Section order and list ordering are consistent and sorted, so the Markdown
-/// view conveys the same information as the machine-readable formats.
-pub(crate) fn render_markdown(report: &Report) -> String {
+/// `details` controls whether supporting file paths are shown. Aggregate
+/// information (counts, proportions) is always shown.
+pub(crate) fn render_markdown(report: &Report, details: bool) -> String {
     let mut out = String::new();
     out.push_str("# Repository Analysis\n\n");
+    // Language section includes file-count approximation note
+    if !report.languages.is_empty() {
+        let total: usize = report.languages.iter().map(|e| e.files.len()).sum();
+        out.push_str("## Languages\n\n");
+        out.push_str("_Language proportions are file-count approximations over classified files only (not Linguist byte analysis)._\n\n");
+        for e in &report.languages {
+            let count = e.files.len();
+            let prop = if total > 0 {
+                count as f64 / total as f64 * 100.0
+            } else {
+                0.0
+            };
+            if details {
+                out.push_str(&format!(
+                    "- {} ({} files, {:.1}% — {}) : `{}`\n",
+                    e.name,
+                    count,
+                    prop,
+                    "file-count approx",
+                    paths_join(&e.files)
+                ));
+            } else {
+                out.push_str(&format!(
+                    "- {} ({} files, {:.1}% — file-count approximation)\n",
+                    e.name, count, prop
+                ));
+            }
+        }
+        out.push('\n');
+    }
 
-    section_list(&mut out, "## Languages", &report.languages, |e| {
-        format!("{} (`{}`)", e.name, paths_join(&e.files))
-    });
-    section_list(&mut out, "## Manifests", &report.manifests, |e| {
-        format!("{} (`{}`)", e.kind, paths_join(&e.files))
-    });
-    section_list(&mut out, "## Linters", &report.linters, |e| {
-        format!("{} (`{}`)", e.name, paths_join(&e.files))
-    });
-    section_list(&mut out, "## Tests", &report.tests, |e| {
-        format!("{} (`{}`)", e.name, paths_join(&e.files))
-    });
-    section_list(&mut out, "## Containers", &report.containers, |e| {
-        format!("{} (`{}`)", e.kind, paths_join(&e.files))
-    });
-    section_list(&mut out, "## CI/CD", &report.cicd, |e| {
-        format!("{} (`{}`)", e.name, paths_join(&e.files))
-    });
-    section_list(&mut out, "## Entry Points", &report.entry_points, |e| {
-        format!("{} (`{}`)", e.kind, paths_join(&e.files))
-    });
-    section_list(
-        &mut out,
-        "## Sensitive Files",
-        &report.sensitive_files,
-        |e| format!("`{}` (signal: {})", e.path, e.signal),
+    // Helper for other categories — avoids intermediate Vec allocation (Chapter 3: zero-cost iterators).
+    // Takes iterators borrowing the report so no cloning of Vec<FileRef> occurs.
+    let mut render_category =
+        |title: &str,
+         iter: &mut dyn Iterator<Item = (&str, &[crate::analyze::report::FileRef])>| {
+            let mut first = true;
+            for (name, files) in iter {
+                if first {
+                    out.push_str(title);
+                    out.push_str("\n\n");
+                    first = false;
+                }
+                if details {
+                    out.push_str(&format!(
+                        "- {} ({} files) (`{}`)\n",
+                        name,
+                        files.len(),
+                        paths_join(files)
+                    ));
+                } else {
+                    out.push_str(&format!("- {} ({} files)\n", name, files.len()));
+                }
+            }
+            if !first {
+                out.push('\n');
+            }
+        };
+
+    render_category(
+        "## Manifests",
+        &mut report
+            .manifests
+            .iter()
+            .map(|e| (e.kind.as_str(), e.files.as_slice())),
     );
+    render_category(
+        "## Linters",
+        &mut report
+            .linters
+            .iter()
+            .map(|e| (e.name.as_str(), e.files.as_slice())),
+    );
+    render_category(
+        "## Tests",
+        &mut report
+            .tests
+            .iter()
+            .map(|e| (e.name.as_str(), e.files.as_slice())),
+    );
+    render_category(
+        "## Containers",
+        &mut report
+            .containers
+            .iter()
+            .map(|e| (e.kind.as_str(), e.files.as_slice())),
+    );
+    render_category(
+        "## CI/CD",
+        &mut report
+            .cicd
+            .iter()
+            .map(|e| (e.name.as_str(), e.files.as_slice())),
+    );
+    render_category(
+        "## Entry Points",
+        &mut report
+            .entry_points
+            .iter()
+            .map(|e| (e.kind.as_str(), e.files.as_slice())),
+    );
+
+    if details && !report.sensitive_files.is_empty() {
+        out.push_str("## Sensitive Files\n\n");
+        for e in &report.sensitive_files {
+            out.push_str(&format!("- `{}` (signal: {})\n", e.path, e.signal));
+        }
+        out.push('\n');
+    } else if !details && !report.sensitive_files.is_empty() {
+        out.push_str("## Sensitive Files\n\n");
+        out.push_str(&format!(
+            "- {} sensitive file(s) detected (details hidden; use --details)\n\n",
+            report.sensitive_files.len()
+        ));
+    }
 
     if !report.suggestions.is_empty() {
         out.push_str("## Suggestions\n\n");
@@ -81,10 +405,12 @@ pub(crate) fn render_markdown(report: &Report) -> String {
         out.push('\n');
     }
 
+    // If no sections emitted, keep heading only (still valid)
     out
 }
 
 /// Render a named section with its bullet list, if non-empty.
+#[allow(dead_code)]
 fn section_list<T, F>(out: &mut String, title: &str, items: &[T], fmt: F)
 where
     F: Fn(&T) -> String,
@@ -104,8 +430,6 @@ where
 
 /// Join FileRef paths with commas for inline display.
 fn paths_join(files: &[crate::analyze::report::FileRef]) -> String {
-    // Build the joined string directly from the iterator to avoid an
-    // intermediate allocation (clippy `needless_collect`), preserving output.
     let mut out = String::new();
     for (i, f) in files.iter().enumerate() {
         if i > 0 {
@@ -140,11 +464,10 @@ mod tests {
     #[test]
     fn json_yaml_round_trip_same_model() {
         let r = sample();
-        let json = render(&r, OutputFormat::Json).expect("json");
-        let yaml = render(&r, OutputFormat::Yaml).expect("yaml");
+        let json = render(&r, OutputFormat::Json, true).expect("json");
+        let yaml = render(&r, OutputFormat::Yaml, true).expect("yaml");
         assert!(json.contains("\"languages\""));
         assert!(yaml.contains("languages:"));
-        // Both contain the same category keys.
         assert!(json.contains("sensitive_files"));
         assert!(yaml.contains("sensitive_files"));
     }
@@ -152,7 +475,7 @@ mod tests {
     #[test]
     fn markdown_contains_sections() {
         let r = sample();
-        let md = render_markdown(&r);
+        let md = render_markdown(&r, true);
         assert!(md.contains("## Languages"));
         assert!(md.contains("Rust"));
         assert!(md.contains(".env"));
@@ -162,7 +485,7 @@ mod tests {
     #[test]
     fn empty_report_has_all_keys_in_json() {
         let r = Report::new();
-        let json = render(&r, OutputFormat::Json).expect("json");
+        let json = render(&r, OutputFormat::Json, false).expect("json");
         for key in [
             "languages",
             "manifests",
@@ -177,5 +500,59 @@ mod tests {
         ] {
             assert!(json.contains(key), "missing key {key}");
         }
+    }
+
+    #[test]
+    fn default_omits_files_details_includes_them() {
+        let r = sample();
+        let json_default = render(&r, OutputFormat::Json, false).unwrap();
+        assert!(
+            !json_default.contains("src/main.rs"),
+            "default should omit evidence"
+        );
+        // file_count aggregate present
+        assert!(json_default.contains("file_count"));
+        let json_details = render(&r, OutputFormat::Json, true).unwrap();
+        assert!(
+            json_details.contains("src/main.rs"),
+            "details should include evidence"
+        );
+    }
+
+    #[test]
+    fn language_proportion_note_present() {
+        let r = sample();
+        let json = render(&r, OutputFormat::Json, false).unwrap();
+        assert!(json.contains("file-count approximation"));
+        // Must not imply byte-based Linguist analysis
+        assert!(!json.contains("Linguist byte") || json.contains("not Linguist"));
+        let md = render_markdown(&r, false);
+        assert!(md.contains("file-count approximation"));
+        assert!(md.contains("not Linguist"));
+    }
+
+    #[test]
+    fn sensitive_files_gated_by_details() {
+        let r = sample();
+        // Default (details=false): aggregate-only, no per-file evidence
+        let json_default = render(&r, OutputFormat::Json, false).unwrap();
+        assert!(
+            !json_default.contains(".env"),
+            "default must not leak sensitive file paths"
+        );
+        assert!(
+            !json_default.contains("env-file"),
+            "default must not leak sensitive signals"
+        );
+        let md_default = render_markdown(&r, false);
+        assert!(!md_default.contains(".env"));
+        assert!(md_default.contains("sensitive file(s) detected"));
+        // Details=true: evidence deterministically included
+        let json_details = render(&r, OutputFormat::Json, true).unwrap();
+        assert!(json_details.contains(".env"));
+        assert!(json_details.contains("env-file"));
+        let md_details = render_markdown(&r, true);
+        assert!(md_details.contains(".env"));
+        assert!(md_details.contains("env-file"));
     }
 }

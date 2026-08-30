@@ -39,11 +39,13 @@ use std::os::unix::fs::PermissionsExt;
 ///
 /// Returns the structured body for stdout. Never fails for unreadable subtrees;
 /// those become `limitations` and the scan still yields a valid report with a
-/// `0` status (design D8). `suggest` toggles `--suggest` catalog guidance.
+/// `0` status (design D8). `suggest` toggles `--suggest` catalog guidance,
+/// `details` toggles file-path evidence (aggregate-only when false).
 pub(crate) fn run(
     root: &Path,
     format: OutputFormat,
     suggest: bool,
+    details: bool,
 ) -> Result<String, LibraryError> {
     let root = if root.is_absolute() {
         root.to_path_buf()
@@ -70,7 +72,7 @@ pub(crate) fn run(
             .collect();
     }
     report.sort_all();
-    serialize::render(&report, format)
+    serialize::render(&report, format, details)
 }
 
 /// Aggregate the walked entries into a shared [`Report`].
@@ -235,7 +237,7 @@ mod tests {
     #[test]
     fn empty_repo_yields_valid_report_all_keys() {
         let root = temp_root();
-        let body = run(&root.0, OutputFormat::Json, false).expect("analyze empty");
+        let body = run(&root.0, OutputFormat::Json, false, false).expect("analyze empty");
         assert!(body.contains("\"languages\""));
         assert!(body.contains("\"sensitive_files\""));
         assert!(body.contains("\"suggestions\""));
@@ -249,7 +251,7 @@ mod tests {
         fs::create_dir_all(root.0.join(".github/workflows")).unwrap();
         fs::write(root.0.join(".github/workflows/ci.yml"), "on: push\n").unwrap();
 
-        let body = run(&root.0, OutputFormat::Json, false).expect("analyze");
+        let body = run(&root.0, OutputFormat::Json, false, false).expect("analyze");
         assert!(body.contains("cargo"));
         assert!(body.contains("npm"));
         assert!(body.contains("github-actions"));
@@ -259,7 +261,7 @@ mod tests {
     fn secret_file_is_reported_without_contents() {
         let root = temp_root();
         fs::write(root.0.join(".env"), "SECRET=1\n").unwrap();
-        let body = run(&root.0, OutputFormat::Json, false).expect("analyze");
+        let body = run(&root.0, OutputFormat::Json, false, true).expect("analyze");
         assert!(body.contains(".env"));
         assert!(body.contains("env-file"));
         assert!(!body.contains("SECRET=1"), "secret value must not leak");
@@ -275,7 +277,7 @@ mod tests {
 
         // Best-effort: permission-denied dirs may or may not be traversable
         // depending on platform/root; assert no panic and a valid report.
-        let body = run(&root.0, OutputFormat::Json, false);
+        let body = run(&root.0, OutputFormat::Json, false, false);
         let _ = fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755));
         assert!(body.is_ok());
     }
@@ -286,8 +288,8 @@ mod tests {
         fs::write(root.0.join("Cargo.toml"), "[package]\n").unwrap();
         fs::write(root.0.join("a.rs"), "").unwrap();
         fs::write(root.0.join("b.rs"), "").unwrap();
-        let a = run(&root.0, OutputFormat::Json, true).expect("run a");
-        let b = run(&root.0, OutputFormat::Json, true).expect("run b");
+        let a = run(&root.0, OutputFormat::Json, true, false).expect("run a");
+        let b = run(&root.0, OutputFormat::Json, true, false).expect("run b");
         assert_eq!(a, b, "repeated runs must be byte-identical");
     }
 }

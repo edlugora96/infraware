@@ -188,11 +188,15 @@ fn manifest_kind(name: &str, lower: &str, ext: &str) -> Option<String> {
 }
 
 /// Map a file extension to a language name.
-fn language_kind(ext: &str) -> Option<String> {
+///
+/// Per MVP2 spec: `.ts`/`.tsx` → TypeScript, `.js`/`.mjs`/`.cjs`/`.jsx` → JavaScript.
+/// Only classified extensions contribute to the language denominator (file-count
+/// approximation, not Linguist byte analysis).
+pub(crate) fn language_kind(ext: &str) -> Option<String> {
     let lang = match ext {
         "rs" => "Rust",
-        "js" | "mjs" | "cjs" | "jsx" | "tsx" => "JavaScript",
-        "ts" => "TypeScript",
+        "js" | "mjs" | "cjs" | "jsx" => "JavaScript",
+        "ts" | "tsx" => "TypeScript",
         "py" => "Python",
         "go" => "Go",
         "java" => "Java",
