@@ -4,8 +4,3 @@
 .infraware
 openspec
 docs/
-# generated binaries (real binaries only in published package)
-binaries/darwin-arm64/infraware
-binaries/darwin-x64/infraware
-binaries/linux-x64/infraware
-binaries/win32-x64/infraware.exe

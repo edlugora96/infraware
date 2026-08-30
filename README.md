@@ -1,32 +1,59 @@
 # infraware
 
-## Install (private npm)
+## Private Distribution
 
-```sh
-# configure auth once (choose one)
-npm login  # or set NPM_TOKEN
-# or create ~/.npmrc with:
-# //registry.npmjs.org/:_authToken=${NPM_TOKEN}
+Repository: `git@github.com:edlugora96/infraware.git`
 
-npm install -g @edlugora96/infraware
-infraware --help
+### Authentication
 
-# one-shot
-npx @edlugora96/infraware --help
+**SSH:**
+```
+# add your SSH key to GitHub, then
+git clone git@github.com:edlugora96/infraware.git
 ```
 
-Requires Node >=18. Package is private (`--access restricted`); you need an npm account granted access. Auth via `npm login` or `NPM_TOKEN` env / `.npmrc`.
+**HTTPS with PAT:**
+Create a fine-grained PAT (classic PAT with `repo` scope also works), then use credential helper:
+```
+git config --global credential.helper store  # or osxkeychain / manager
+git clone https://github.com/edlugora96/infraware.git
+# username: your GitHub username, password: PAT
+```
+Or inline (not recommended for persistence): `https://<PAT>@github.com/edlugora96/infraware.git`
 
-## Supported targets
+### Install
 
-Bundled binaries: `darwin-arm64`, `darwin-x64`, `linux-x64`, `win32-x64` (others error: unsupported platform). No auto-updater; update via `npm install -g @edlugora96/infraware@<version>`.
+```sh
+npm install -g github:edlugora96/infraware
+# with tag:
+npm install -g github:edlugora96/infraware#v0.1.0
+```
 
-## Versioning
+Requires Node >=18 and valid GitHub auth for the private repo.
 
-- `0.1.0` (Cargo.toml authoritative, package.json in sync)
-- Git tags `v*` trigger releases.
+### npx (if supported)
 
-## Troubleshooting
+npm >=7 supports GitHub URL shorthand:
 
-- `npm ERR! 404/403` → not logged in or not granted access to `@edlugora96/infraware`; run `npm login` or check `NPM_TOKEN`.
-- Unsupported platform → only four targets above are supported.
+```sh
+npx github:edlugora96/infraware --help
+npx github:edlugora96/infraware#v0.1.0 --help
+```
+
+If your npm version does not support `npx github:` URLs, use the global install above.
+
+### Tags & Versioning
+
+- Version `0.1.0` (Cargo.toml authoritative, package.json in sync)
+- Git tags: `v0.1.0`
+- Updates: reinstall via npm with new tag; no auto-update or `infraware update` command exists.
+
+### Troubleshooting
+
+- **Auth failures:** verify SSH key `ssh -T git@github.com` or PAT scope/credential helper; for HTTPS ensure PAT not expired.
+- **npx GitHub URL not supported:** upgrade npm (`npm i -g npm`) or use `npm install -g`.
+- **Unsupported platform:** launcher supports `darwin-arm64`, `darwin-x64`, `linux-x64`, `win32-x64` only; others exit with error (deferred).
+
+### Updating
+
+No internal updater. To update: `npm install -g github:edlugora96/infraware#<new-tag>`
