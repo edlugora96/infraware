@@ -62,8 +62,19 @@ fn write_file(root: &Path, rel: &str, content: &str) {
 /// Analysis is fail-soft, so a valid report (status 0 at the seam) is always
 /// expected; a dispatched error here is a genuine contract violation.
 fn analyze(root: &Path, format: OutputFormat, suggest: bool) -> String {
-    let out = dispatch(Command::Analyze { format, suggest }, root)
-        .unwrap_or_else(|e| panic!("analyze must succeed (fail-soft): {e:?}"));
+    analyze_with_details(root, format, suggest, false)
+}
+
+fn analyze_with_details(root: &Path, format: OutputFormat, suggest: bool, details: bool) -> String {
+    let out = dispatch(
+        Command::Analyze {
+            format,
+            suggest,
+            details,
+        },
+        root,
+    )
+    .unwrap_or_else(|e| panic!("analyze must succeed (fail-soft): {e:?}"));
     assert_eq!(out.format, format, "dispatch echoes the requested format");
     out.body
 }
@@ -191,7 +202,7 @@ fn empty_repo_yields_valid_report_all_keys_status_ok() {
 fn gitignore_and_builtin_skips_exclude_paths() {
     let root = temp_root();
     build_gitignore(&root.0);
-    let body = analyze(&root.0, OutputFormat::Json, false);
+    let body = analyze_with_details(&root.0, OutputFormat::Json, false, true);
 
     // gitignore: secret.env ignored (signal-bearing `.env`), keep.env
     // re-included via negation and still classified as a secret.
@@ -234,7 +245,7 @@ fn builtin_skip_applies_without_gitignore() {
     // No .gitignore at all: built-in skips must still apply.
     write_file(&root.0, "node_modules/dep.js", "x");
     write_file(&root.0, "src/main.rs", "fn main() {}\n");
-    let body = analyze(&root.0, OutputFormat::Json, false);
+    let body = analyze_with_details(&root.0, OutputFormat::Json, false, true);
     assert!(
         !body.contains("node_modules/dep.js"),
         "built-in node_modules skipped without .gitignore"
@@ -251,7 +262,7 @@ fn symlink_to_dir_is_not_followed() {
     write_file(&root.0, "realdir/inside.rs", "fn main() {}\n");
     std::os::unix::fs::symlink(root.0.join("realdir"), root.0.join("linkdir"))
         .expect("create symlink");
-    let body = analyze(&root.0, OutputFormat::Json, false);
+    let body = analyze_with_details(&root.0, OutputFormat::Json, false, true);
 
     // The symlinked subtree must never be entered via the link.
     assert!(
@@ -278,7 +289,7 @@ fn symlink_to_secretlike_file_is_not_classified() {
     // A symlink whose *name* would be classified as a secret if followed.
     std::os::unix::fs::symlink(root.0.join("real.rs"), root.0.join("link.env"))
         .expect("create symlink");
-    let body = analyze(&root.0, OutputFormat::Json, false);
+    let body = analyze_with_details(&root.0, OutputFormat::Json, false, true);
 
     // The symlink must not appear as a classified (sensitive) entry. The
     // limitation reason text ("symlink skipped ...: link.env") must not match
@@ -323,7 +334,7 @@ fn secret_files_reported_by_path_signal_only_no_value_leak() {
         OutputFormat::Yaml,
         OutputFormat::Markdown,
     ] {
-        let body = analyze(&root.0, format, false);
+        let body = analyze_with_details(&root.0, format, false, true);
 
         // Paths + standard labels ARE present (evidence without disclosure).
         assert!(body.contains(".env"), "{format:?}: .env path present");
@@ -355,7 +366,7 @@ fn secret_files_reported_by_path_signal_only_no_value_leak() {
 fn unreadable_dir_becomes_limitation_status_ok() {
     let root = temp_root();
     let locked = build_unreadable(&root.0);
-    let body = analyze(&root.0, OutputFormat::Json, false);
+    let body = analyze_with_details(&root.0, OutputFormat::Json, false, true);
 
     // Other, readable evidence is still reported (status 0 contract).
     assert!(
