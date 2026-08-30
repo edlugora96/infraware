@@ -2,8 +2,10 @@ name: release
 on:
   push:
     tags: ['v*']
+
 permissions:
   contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -13,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate version and targets
         run: |
-          set -e
+          set -euo pipefail
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
           PKG_VERSION=$(node -p "require('./package.json').version")
           if [ "$VERSION" != "$PKG_VERSION" ]; then
@@ -25,10 +27,29 @@ jobs:
           fi
           for t in darwin-arm64 darwin-x64 linux-x64 win32-x64; do
             if [ "$t" = "win32-x64" ]; then
-              test -f "binaries/$t/infraware.exe" || { echo "Missing $t"; exit 1; }
+              F="binaries/$t/infraware.exe"
             else
-              test -f "binaries/$t/infraware" || { echo "Missing $t"; exit 1; }
+              F="binaries/$t/infraware"
             fi
+            test -f "$F" || { echo "Missing $F"; exit 1; }
+            test -s "$F" || { echo "Empty $F"; exit 1; }
+            if grep -q "placeholder" "$F" 2>/dev/null; then echo "Placeholder binary $F - fail closed"; exit 1; fi
+            if [ "$t" = "win32-x64" ]; then
+              head -c 2 "$F" | od -An -tx1 | grep -q "4d 5a" || { echo "Invalid win32 format $F"; exit 1; }
+            else
+              file "$F" | grep -iE "ELF|Mach-O|executable" || { echo "Invalid format $F: $(file $F)"; exit 1; }
+              test -x "$F" || { echo "Not executable $F"; exit 1; }
+            fi
+          done
+          # Validate no postinstall/runtime download
+          node -p "const p=require('./package.json'); if(p.scripts&&p.scripts.postinstall) throw new Error('postinstall forbidden')"
+          # Validate npm pack contents
+          PACK_LIST=$(npm pack --dry-run 2>&1 || true)
+          echo "$PACK_LIST"
+          echo "$PACK_LIST" | grep -q "bin/infraware.js" || { echo "launcher missing in pack"; exit 1; }
+          for t in darwin-arm64 darwin-x64 linux-x64 win32-x64; do
+            if [ "$t" = "win32-x64" ]; then F="binaries/$t/infraware.exe"; else F="binaries/$t/infraware"; fi
+            echo "$PACK_LIST" | grep -q "$F" || { echo "binary $F missing in pack"; exit 1; }
           done
   release:
     needs: validate
@@ -39,15 +60,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Generate SHA256 checksums
         run: |
-          set -e
-          sha256sum binaries/darwin-arm64/infraware > checksums.txt
-          sha256sum binaries/darwin-x64/infraware >> checksums.txt
-          sha256sum binaries/linux-x64/infraware >> checksums.txt
-          sha256sum binaries/win32-x64/infraware.exe >> checksums.txt
+          set -euo pipefail
+          {
+            sha256sum binaries/darwin-arm64/infraware
+            sha256sum binaries/darwin-x64/infraware
+            sha256sum binaries/linux-x64/infraware
+            sha256sum binaries/win32-x64/infraware.exe
+          } | sort > checksums.txt
           cat checksums.txt
       - name: Verify checksums
         run: |
-          set -e
+          set -euo pipefail
           sha256sum -c checksums.txt
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

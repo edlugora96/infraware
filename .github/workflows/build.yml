@@ -2,8 +2,14 @@ name: build
 on:
   push:
     branches: [main]
+
 permissions:
   contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
@@ -22,6 +28,8 @@ jobs:
             os: windows-latest
             rust_target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -42,3 +50,80 @@ jobs:
         with:
           name: ${{ matrix.target }}
           path: binaries/${{ matrix.target }}/
+          if-no-files-found: error
+
+  publish-binaries:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: _artifacts
+      - name: Validate and replace binaries
+        run: |
+          set -euo pipefail
+          for t in darwin-arm64 darwin-x64 linux-x64 win32-x64; do
+            SRC="_artifacts/$t"
+            DST="binaries/$t"
+            if [ "$t" = "win32-x64" ]; then
+              BIN="infraware.exe"
+            else
+              BIN="infraware"
+            fi
+            test -f "$SRC/$BIN" || { echo "Missing artifact $t/$BIN"; exit 1; }
+            test -s "$SRC/$BIN" || { echo "Empty artifact $t/$BIN"; exit 1; }
+            # Executable check (win exe has MZ header, unix has exec bit or ELF/Mach-O)
+            if [ "$t" = "win32-x64" ]; then
+              head -c 2 "$SRC/$BIN" | od -An -tx1 | grep -q "4d 5a" || { echo "Invalid win32 binary format"; exit 1; }
+            else
+              # Check not empty and has ELF or Mach-O magic; fail closed if placeholder text detected
+              if grep -q "placeholder" "$SRC/$BIN" 2>/dev/null; then echo "Placeholder binary detected for $t"; exit 1; fi
+              file "$SRC/$BIN" | grep -iE "ELF|Mach-O|executable" || { echo "Invalid binary format for $t: $(file $SRC/$BIN)"; exit 1; }
+              chmod +x "$SRC/$BIN"
+            fi
+            mkdir -p "$DST"
+            cp "$SRC/$BIN" "$DST/$BIN"
+            chmod +x "$DST/$BIN" 2>/dev/null || true
+          done
+          # Generate deterministic checksums (sorted)
+          {
+            sha256sum binaries/darwin-arm64/infraware
+            sha256sum binaries/darwin-x64/infraware
+            sha256sum binaries/linux-x64/infraware
+            sha256sum binaries/win32-x64/infraware.exe
+          } | sort > checksums.txt
+          sha256sum -c checksums.txt
+          cat checksums.txt
+      - name: Commit and push if changed
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Prevent infinite loop: early exit if last commit was [skip ci] (do not rely only on GitHub skip)
+          LAST_MSG=$(git log -1 --pretty=%B || true)
+          if echo "$LAST_MSG" | grep -q "\[skip ci\]"; then
+            echo "Last commit was [skip ci], exiting to prevent loop"
+            exit 0
+          fi
+          # Avoid stale artifact pairing: ensure checked-out HEAD matches triggering SHA
+          HEAD_SHA=$(git rev-parse HEAD)
+          if [ "$HEAD_SHA" != "$GITHUB_SHA" ]; then
+            echo "Stale checkout: HEAD $HEAD_SHA != triggering GITHUB_SHA $GITHUB_SHA — aborting to avoid pairing wrong artifacts"
+            exit 1
+          fi
+          git add binaries/ checksums.txt
+          if git diff --cached --quiet; then
+            echo "No binary changes to commit"
+            exit 0
+          fi
+          # Handle stale push: pull --rebase before push
+          git commit -m "chore(binaries): update bundled binaries [skip ci]"
+          git pull --rebase origin main || { echo "Rebase failed, aborting"; exit 1; }
+          git push origin HEAD:main
