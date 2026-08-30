@@ -1,9 +1,11 @@
 # Binaries
 
-Precompiled binaries bundled for private npm distribution. Targets:
-- darwin-arm64
-- darwin-x64
-- linux-x64
-- win32-x64 (infraware.exe)
+Real binaries are bundled in the published npm package `@edlugora96/infraware` (built in CI). Source checkout does not contain binaries; they are assembled at release time.
 
-Placeholders exist until CI builds replace them. Do not add postinstall downloaders.
+Targets:
+- darwin-arm64 (Mach-O arm64)
+- darwin-x64 (Mach-O x64)
+- linux-x64 (ELF x64)
+- win32-x64 (PE/MZ, infraware.exe)
+
+Do not commit placeholder binaries.
