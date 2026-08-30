@@ -97,7 +97,7 @@ jobs:
           (cd dist && sha256sum infraware-* > checksums.txt && cat checksums.txt && sha256sum -c checksums.txt)
           ls -lh dist/
       - name: Publish to npmjs
-        run: npm publish ./_pkg --access restricted
+        run: npm publish _pkg --access restricted
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Create GitHub Release
