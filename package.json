@@ -1,5 +1,5 @@
 {
-  "name": "@edlugora96/infraware",
+  "name": "infraware",
   "version": "0.1.0",
   "description": "Passive, report-only CLI for deterministic offline repository and architecture analysis",
   "bin": {
@@ -7,17 +7,8 @@
   },
   "files": [
     "bin/",
-    "binaries/",
-    "scripts/"
+    "binaries/"
   ],
-  "scripts": {
-    "prepublishOnly": "node ./scripts/verify-binaries.js",
-    "prepack": "node ./scripts/verify-binaries.js"
-  },
-  "publishConfig": {
-    "registry": "https://registry.npmjs.org",
-    "access": "restricted"
-  },
   "engines": {
     "node": ">=18"
   },
