@@ -248,7 +248,69 @@ fn to_value(report: &Report, details: bool) -> Value {
         })
         .collect();
 
+    let mut tech = Map::new();
+    tech.insert(
+        "structure".to_string(),
+        Value::Array(
+            report
+                .technology_patterns
+                .structure
+                .iter()
+                .map(|s| Value::String(s.clone()))
+                .collect(),
+        ),
+    );
+    tech.insert(
+        "project_shape".to_string(),
+        Value::String(report.technology_patterns.project_shape.clone()),
+    );
+    tech.insert(
+        "cicd".to_string(),
+        Value::Array(
+            report
+                .technology_patterns
+                .cicd
+                .iter()
+                .map(|s| Value::String(s.clone()))
+                .collect(),
+        ),
+    );
+    tech.insert(
+        "infra".to_string(),
+        Value::Array(
+            report
+                .technology_patterns
+                .infra
+                .iter()
+                .map(|s| Value::String(s.clone()))
+                .collect(),
+        ),
+    );
+    tech.insert(
+        "db".to_string(),
+        Value::Array(
+            report
+                .technology_patterns
+                .db
+                .iter()
+                .map(|s| Value::String(s.clone()))
+                .collect(),
+        ),
+    );
+    if details {
+        if let Some(ev) = &report.technology_patterns.evidence {
+            let mut ev_map = Map::new();
+            for (k, v) in ev {
+                ev_map.insert(
+                    k.clone(),
+                    Value::Array(v.iter().map(|f| Value::String(f.path.clone())).collect()),
+                );
+            }
+            tech.insert("evidence".to_string(), Value::Object(ev_map));
+        }
+    }
     let mut root = Map::new();
+    root.insert("technology_patterns".to_string(), Value::Object(tech));
     root.insert("languages".to_string(), Value::Array(languages));
     root.insert("manifests".to_string(), Value::Array(manifests));
     root.insert("linters".to_string(), Value::Array(linters));
@@ -370,6 +432,63 @@ pub(crate) fn render_markdown(report: &Report, details: bool) -> String {
             .iter()
             .map(|e| (e.kind.as_str(), e.files.as_slice())),
     );
+
+    // Technology patterns section (always show aggregates, evidence gated)
+    {
+        out.push_str("## Technology Patterns\n\n");
+        out.push_str(&format!(
+            "- project_shape: {}\n",
+            report.technology_patterns.project_shape
+        ));
+        if !report.technology_patterns.structure.is_empty() {
+            out.push_str(&format!(
+                "- structure: {}\n",
+                report.technology_patterns.structure.join(", ")
+            ));
+        } else {
+            out.push_str("- structure: (none)\n");
+        }
+        if !report.technology_patterns.cicd.is_empty() {
+            out.push_str(&format!(
+                "- cicd: {}\n",
+                report.technology_patterns.cicd.join(", ")
+            ));
+        } else {
+            out.push_str("- cicd: (none)\n");
+        }
+        if !report.technology_patterns.infra.is_empty() {
+            out.push_str(&format!(
+                "- infra: {}\n",
+                report.technology_patterns.infra.join(", ")
+            ));
+        } else {
+            out.push_str("- infra: (none)\n");
+        }
+        if !report.technology_patterns.db.is_empty() {
+            out.push_str(&format!(
+                "- db: {}\n",
+                report.technology_patterns.db.join(", ")
+            ));
+        } else {
+            out.push_str("- db: (none)\n");
+        }
+        if details {
+            if let Some(ev) = &report.technology_patterns.evidence {
+                for (k, paths) in ev {
+                    out.push_str(&format!(
+                        "- evidence {}: {}\n",
+                        k,
+                        paths
+                            .iter()
+                            .map(|p| p.path.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+            }
+        }
+        out.push('\n');
+    }
 
     if details && !report.sensitive_files.is_empty() {
         out.push_str("## Sensitive Files\n\n");
