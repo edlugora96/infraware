@@ -268,7 +268,7 @@ pub(crate) fn run(
         }
     })?;
     Ok(DispatchOutput {
-        format: OutputFormat::Markdown,
+        format: OutputFormat::Json,
         body: output_json(&outcome),
     })
 }

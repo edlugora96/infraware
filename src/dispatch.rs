@@ -1,11 +1,9 @@
 //! The single caller-independent dispatch boundary.
 
 use crate::command::Command;
-use crate::definition;
 use crate::error::LibraryError;
 use crate::format::OutputFormat;
 use crate::ingest;
-use crate::lifecycle;
 use std::path::Path;
 
 /// Structured output produced by dispatch for a successful command.
@@ -32,83 +30,42 @@ pub struct DispatchOutput {
 /// the callers (binary, agents) never pass it per-command; the boundary owns
 /// the only canonical-storage touchpoint (design D4).
 ///
-/// The frozen stream/status contract is preserved:
-/// - `init` creates `.infraware/ARCHITECTURE.md` via the lifecycle/persistence
-///   boundary and succeeds with no structured body (no stdout).
-/// - `analyze` succeeds with an empty body: empty/incomplete analysis is
-///   successful and finalized by Plan 4.
-/// - `get`/`insert`/`edit`/`remove` require canonical storage that does not
-///   exist yet, so they return the corresponding typed error (non-zero).
+/// The frozen stream/status contract is preserved: usage failures map to
+/// status 2 with empty stdout; operational failures (missing/incompatible
+/// store, record-not-found, backend errors) map to status 1 with empty
+/// stdout and one `error:` line on stderr.
+///
+/// Exactly the six SQLite-backed verbs are routed, each to its thin core:
+/// - `ingest`/`query` keep their existing SQLite paths.
+/// - `list`/`get` read through the approved read-only snapshot lane.
+/// - `patch`/`remove` mutate through the approved read-write lane.
 pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, LibraryError> {
     match command {
-        Command::Init => {
-            // Functional `init`: create `.infraware/ARCHITECTURE.md` only when
-            // absent (idempotent, no-clobber). Errors propagate as a typed
-            // `LibraryError` and are mapped to stderr + non-zero status by `run`,
-            // never to stdout.
-            lifecycle::init(root)?;
-            Ok(DispatchOutput {
-                format: OutputFormat::Markdown,
-                body: String::new(),
-            })
-        }
-        Command::Analyze {
-            format,
-            suggest,
-            details,
-        } => {
-            // Realize the deferred `analyze` behavior (Plan 4 + MVP2): offline,
-            // deterministic, read-only scan rendered in `format`. Empty/
-            // incomplete/partially-unreadable repos still succeed with a well-
-            // formed report and status 0 (design D8). `details` gates evidence.
-            let body = crate::analyze::run(root, format, suggest, details)?;
-            Ok(DispatchOutput { format, body })
-        }
-        // Storage-backed definition operations (Plan 3). Each loads the
-        // canonical document, enforces strict existence semantics, and persists
-        // only through the Plan 2 atomic boundary. A missing canonical file
-        // surfaces as UninitializedStorage (never implicit init).
-        Command::Get { id, format } => {
-            let body = definition::get(root, &id, format)?;
-            Ok(DispatchOutput { format, body })
-        }
-        Command::Insert { id, value } => {
-            definition::insert(root, &id, &value)?;
-            Ok(DispatchOutput {
-                format: OutputFormat::Markdown,
-                body: String::new(),
-            })
-        }
-        Command::Edit { id, value } => {
-            definition::edit(root, &id, &value)?;
-            Ok(DispatchOutput {
-                format: OutputFormat::Markdown,
-                body: String::new(),
-            })
-        }
-        Command::Remove { id } => {
-            // RAG `remove` (parent + child specs): hard delete by positive
-            // integer record id across records/meta_kv/vecs. The legacy
-            // Markdown definition store owns no `remove` behavior under the
-            // approved RAG specs, so every `remove` routes here; ID shape,
-            // storage, and record-not-found rules live in `remove::run`.
-            crate::remove::run(root, &id)
-        }
-        Command::Patch {
-            id,
-            text,
-            metadata_raw,
-        } => crate::patch::run(root, &id, text.as_deref(), metadata_raw.as_deref()),
-        Command::List { format } => {
-            let body = definition::list(root, format)?;
-            Ok(DispatchOutput { format, body })
-        }
         Command::Ingest { text, metadata_raw } => ingest::run(root, &text, metadata_raw.as_deref()),
         // Task 2.3: `query` execution seam. The arm only routes the owned
         // parser payload to `query::run`; behavior stays deferred to tasks
         // 3.x-6.x. The stub returns a non-usage operational error, so `run`
         // maps it to status 1 with empty stdout (never usage status 2).
         Command::Query { text, filter } => crate::query::run(root, &text, &filter),
+        // Read-only SQLite verbs through the thin records cores: direct
+        // point fetch (`get`) and ascending-id snapshot scan (`list`).
+        Command::List {
+            filter,
+            limit,
+            offset,
+        } => crate::records::list(root, &filter, limit, offset),
+        Command::Get { id } => crate::records::get(root, &id),
+        Command::Patch {
+            id,
+            text,
+            metadata_raw,
+        } => crate::patch::run(root, &id, text.as_deref(), metadata_raw.as_deref()),
+        Command::Remove { id } => {
+            // RAG `remove` (parent + child specs): hard delete by positive
+            // integer record id across records/meta_kv/vecs. ID shape,
+            // storage, and record-not-found rules live in `remove::run`.
+            crate::remove::run(root, &id)
+        }
     }
 }
 
@@ -142,124 +99,176 @@ mod tests {
     }
 
     #[test]
-    fn init_creates_storage_with_empty_body() {
+    fn all_six_verbs_route_through_dispatch() {
+        // Each of the six verbs reaches its core function through the
+        // single dispatch seam. Seeded-index behavior for remove/patch/
+        // get/list is covered below; here every verb at least routes
+        // without an unknown-command rejection on a fresh root.
+        use std::collections::BTreeMap;
         let root = temp_root();
-        let out = dispatch(Command::Init, &root.0).expect("init succeeds");
-        assert_eq!(out.format, OutputFormat::Markdown);
-        assert!(out.body.is_empty(), "init emits no structured body");
-
-        let path = crate::persistence::canonical_path(&root.0);
-        assert!(path.exists(), "ARCHITECTURE.md created by dispatch");
-    }
-
-    #[test]
-    fn init_is_idempotent_through_dispatch() {
-        let root = temp_root();
-        dispatch(Command::Init, &root.0).expect("first init succeeds");
-        let path = crate::persistence::canonical_path(&root.0);
-        let first = fs::read_to_string(&path).unwrap();
-
-        // Simulate an external edit; a second dispatch must NOT overwrite it.
-        let edited = format!("{first}# external edit\n");
-        fs::write(&path, &edited).unwrap();
-
-        dispatch(Command::Init, &root.0).expect("second init succeeds");
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            edited,
-            "existing content must be left untouched (no clobber)"
-        );
-    }
-
-    #[test]
-    fn init_propagates_io_error() {
-        // A root that is itself a file cannot host `.infraware/`, so persistence
-        // returns a typed `Io` error that dispatch propagates unchanged.
-        let file = std::env::temp_dir().join(format!(
-            "infraware-dispatch-file-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::write(&file, b"not a directory").unwrap();
-        let result = dispatch(Command::Init, &file);
-        let _ = fs::remove_file(&file);
-
-        match result {
-            Err(LibraryError::Io { .. }) => {}
-            other => panic!("expected Io error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn analyze_empty_is_success() {
-        // Empty/incomplete analysis still succeeds (status 0) but now yields a
-        // well-formed, non-empty report body with all category keys present.
-        let out = dispatch(
-            Command::Analyze {
-                format: OutputFormat::Json,
-                suggest: true,
-                details: false,
-            },
-            Path::new("."),
-        )
-        .expect("empty analyze succeeds");
-        assert_eq!(out.format, OutputFormat::Json);
+        // ingest: blank text is a usage error from the core (routed, not unknown).
         assert!(
-            !out.body.is_empty(),
-            "analyze now emits a structured report body"
+            dispatch(
+                Command::Ingest {
+                    text: "   ".to_string(),
+                    metadata_raw: None,
+                },
+                &root.0,
+            )
+            .unwrap_err()
+            .is_usage()
         );
-        assert!(out.body.contains("\"languages\""));
-        assert!(out.body.contains("\"suggestions\""));
+        // query: missing index is operational (routed, never usage).
+        assert!(
+            !dispatch(
+                Command::Query {
+                    text: "hello".to_string(),
+                    filter: BTreeMap::new(),
+                },
+                &root.0,
+            )
+            .unwrap_err()
+            .is_usage()
+        );
+        // list/get: missing index is operational (routed, never usage).
+        assert!(
+            !dispatch(
+                Command::List {
+                    filter: Default::default(),
+                    limit: 50,
+                    offset: 0,
+                },
+                &root.0,
+            )
+            .unwrap_err()
+            .is_usage()
+        );
+        assert!(
+            !dispatch(
+                Command::Get {
+                    id: "1".to_string(),
+                },
+                &root.0,
+            )
+            .unwrap_err()
+            .is_usage()
+        );
+        // patch/remove: malformed ids are usage errors from the cores.
+        assert!(
+            dispatch(
+                Command::Patch {
+                    id: "abc".to_string(),
+                    text: Some("x".to_string()),
+                    metadata_raw: None,
+                },
+                &root.0,
+            )
+            .unwrap_err()
+            .is_usage()
+        );
+        assert!(
+            dispatch(
+                Command::Remove {
+                    id: "abc".to_string(),
+                },
+                &root.0,
+            )
+            .unwrap_err()
+            .is_usage()
+        );
+        assert!(!root.0.join(".infraware").exists());
     }
 
     #[test]
-    fn get_is_missing_definition_in_uninitialized_store() {
-        // With no canonical storage, get reports UninitializedStorage (no
-        // implicit init), not MissingDefinition.
+    fn get_and_list_on_missing_store_are_operational() {
+        // A missing index fails closed (status 1 shape) and creates no
+        // files; the snapshot lane never creates storage on the read path.
+        let root = temp_root();
+        for err in [
+            dispatch(
+                Command::List {
+                    filter: Default::default(),
+                    limit: 50,
+                    offset: 0,
+                },
+                &root.0,
+            )
+            .unwrap_err(),
+            dispatch(
+                Command::Get {
+                    id: "1".to_string(),
+                },
+                &root.0,
+            )
+            .unwrap_err(),
+        ] {
+            assert!(!err.is_usage());
+        }
+        assert!(!root.0.join(".infraware").exists());
+    }
+
+    #[test]
+    fn get_validates_id_before_storage() {
+        // A non-integer id is a usage error (status 2) with no storage work.
         let root = temp_root();
         assert_eq!(
             dispatch(
                 Command::Get {
                     id: "abc".to_string(),
-                    format: OutputFormat::Markdown,
                 },
                 &root.0,
             ),
-            Err(LibraryError::UninitializedStorage)
+            Err(LibraryError::InvalidInput {
+                message: "get requires a positive integer <ID>, found: abc".to_string(),
+            })
         );
+        assert!(!root.0.join(".infraware").exists());
     }
 
     #[test]
-    fn insert_requires_storage() {
+    fn get_and_list_round_trip_seeded_index() {
+        // End-to-end dispatch coverage for the read verbs over a real index
+        // seeded through the storage seam (no model needed): get returns
+        // the stored record, list returns it in ascending-id order with a
+        // snapshot-consistent total.
+        use crate::ingest::{HashStore, INGEST_DIMENSION};
         let root = temp_root();
+        let mut store = crate::vec_store::SqliteStore::open(&root.0).unwrap();
+        let emb = vec![0.5f32; INGEST_DIMENSION as usize];
+        let canonical = crate::metadata::canonicalize_metadata(None).unwrap();
+        let hash = crate::metadata::compute_identity(&canonical, "hello");
+        let id = store.insert(&hash, "hello", &canonical, &emb).unwrap();
+        drop(store);
+        let out = dispatch(Command::Get { id: id.to_string() }, &root.0).expect("get succeeds");
+        assert_eq!(out.format, crate::format::OutputFormat::Json);
+        let v: serde_json::Value = serde_json::from_str(&out.body).unwrap();
+        assert_eq!(v["id"], id);
+        assert_eq!(v["text"], serde_json::json!("hello"));
+        // Missing record is the distinct record-not-found error.
         assert_eq!(
             dispatch(
-                Command::Insert {
-                    id: "abc".to_string(),
-                    value: "x".to_string(),
+                Command::Get {
+                    id: "999".to_string(),
                 },
                 &root.0,
             ),
-            Err(LibraryError::UninitializedStorage)
+            Err(LibraryError::MissingDefinition {
+                id: "999".to_string()
+            })
         );
-    }
-
-    #[test]
-    fn edit_requires_storage() {
-        let root = temp_root();
-        assert_eq!(
-            dispatch(
-                Command::Edit {
-                    id: "abc".to_string(),
-                    value: "y".to_string(),
-                },
-                &root.0,
-            ),
-            Err(LibraryError::UninitializedStorage)
-        );
+        let out = dispatch(
+            Command::List {
+                filter: Default::default(),
+                limit: 50,
+                offset: 0,
+            },
+            &root.0,
+        )
+        .expect("list succeeds");
+        let v: serde_json::Value = serde_json::from_str(&out.body).unwrap();
+        assert_eq!(v["total"], 1);
+        assert_eq!(v["records"].as_array().unwrap().len(), 1);
+        assert_eq!(v["records"][0]["id"], id);
     }
 
     #[test]
@@ -419,18 +428,27 @@ mod tests {
         // Regression: wiring the `query` arm must not alter any existing
         // command behavior or the stream/status ownership in `run`.
         let root = temp_root();
-        let out = dispatch(Command::Init, &root.0).expect("init succeeds");
-        assert!(out.body.is_empty());
+        assert!(
+            !dispatch(
+                Command::List {
+                    filter: Default::default(),
+                    limit: 50,
+                    offset: 0,
+                },
+                &root.0,
+            )
+            .unwrap_err()
+            .is_usage()
+        );
         assert_eq!(
             dispatch(
                 Command::Get {
                     id: "abc".to_string(),
-                    format: OutputFormat::Markdown,
                 },
                 &root.0,
             ),
-            Err(LibraryError::MissingDefinition {
-                id: "abc".to_string()
+            Err(LibraryError::InvalidInput {
+                message: "get requires a positive integer <ID>, found: abc".to_string(),
             })
         );
     }

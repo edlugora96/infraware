@@ -436,6 +436,40 @@ impl SqliteStore {
         Ok((map, text))
     }
 
+    /// Read one record's creation timestamp by row id.
+    ///
+    /// Read-only `SELECT` scoped to this call; a missing row or any other
+    /// failure is an internal error for the caller to map.
+    pub(crate) fn created_at(&self, id: i64) -> Result<i64, LibraryError> {
+        self.conn
+            .query_row(
+                "SELECT created_ms FROM records WHERE id=?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .map_err(io_err)
+    }
+
+    /// List every record ordered by ascending id.
+    ///
+    /// Returns `(id, text, canonical metadata, created_ms)` rows from a
+    /// single read-only `SELECT`; callers parse the canonical metadata
+    /// blobs. No DDL, transactions, or writes.
+    pub(crate) fn list_records(&self) -> Result<Vec<(i64, String, String, i64)>, LibraryError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, text, metadata, created_ms FROM records ORDER BY id ASC")
+            .map_err(io_err)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .map_err(io_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(io_err)?);
+        }
+        Ok(out)
+    }
+
     /// Read-write opener for mutation commands (remove/patch).
     ///
     /// Unlike [`open`](Self::open) this never creates storage: a missing
@@ -880,10 +914,12 @@ mod tests {
     }
 
     #[test]
-    fn init_does_not_touch_vec_db() {
+    fn read_only_open_missing_storage_creates_nothing() {
+        // The read-only lane never creates storage: opening a missing
+        // index fails and leaves no `.infraware` behind.
         let root = tmp_root();
-        crate::lifecycle::init(&root).unwrap();
-        assert!(!vec_path(&root).exists());
+        assert!(SqliteStore::open_read_only(&root).is_err());
+        assert!(!root.join(".infraware").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 

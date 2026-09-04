@@ -62,7 +62,7 @@ pub(crate) fn run(root: &Path, id_raw: &str) -> Result<DispatchOutput, LibraryEr
     };
     match store.remove_record(id) {
         Ok(()) => Ok(DispatchOutput {
-            format: OutputFormat::Markdown,
+            format: OutputFormat::Json,
             body: output_json(id),
         }),
         // Distinct record-not-found propagates unchanged (status 1, not the

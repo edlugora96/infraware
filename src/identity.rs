@@ -1,24 +1,22 @@
-//! Centralized definition-ID validation.
+//! Centralized ID validation for RAG metadata keys.
 //!
-//! This is the *only* place ID validation lives (design D3). No other module
+//! This is the *only* place key validation lives (design D3). No other module
 //! may duplicate this rule; they must call [`validate_id`]. The rule is
 //! deliberately conservative: a valid id is non-empty and contains only ASCII
-//! letters, digits, `.`, `_`, and `-`. Anything else — whitespace, quotes,
-//! newlines, or marker syntax — is rejected so ids can never break the exact
-//! `<!-- infraware:definition id="..." -->` envelope.
+//! letters, digits, `.`, `_`, and `-`. Anything else — whitespace, quotes, or
+//! newlines — is rejected.
 
 use crate::error::LibraryError;
 
 /// Characters (besides ASCII alphanumerics) permitted inside a definition id.
 const ID_EXTRA: &[char] = &['.', '_', '-'];
 
-/// Validate a definition id against the single centralized rule.
+/// Validate an id against the single centralized rule.
 ///
 /// Returns `Ok(())` for a non-empty id composed solely of ASCII alphanumeric
 /// characters plus `.`, `_`, and `-`. Returns
-/// [`LibraryError::MalformedDocument`] (the canonical-document error category)
-/// for any rejected id: empty, or containing whitespace, quotes, newlines, or
-/// marker syntax.
+/// [`LibraryError::MalformedDocument`] for any rejected id: empty, or
+/// containing whitespace, quotes, or newlines.
 pub fn validate_id(id: &str) -> Result<(), LibraryError> {
     if id.is_empty() {
         return Err(LibraryError::MalformedDocument {

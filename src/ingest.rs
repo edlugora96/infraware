@@ -109,7 +109,7 @@ pub(crate) fn run(
             dimension: INGEST_DIMENSION,
         };
         return Ok(DispatchOutput {
-            format: OutputFormat::Markdown,
+            format: OutputFormat::Json,
             body: output_json(&out),
         });
     }
@@ -125,7 +125,7 @@ pub(crate) fn run(
         dimension: INGEST_DIMENSION,
     };
     Ok(DispatchOutput {
-        format: OutputFormat::Markdown,
+        format: OutputFormat::Json,
         body: output_json(&out),
     })
 }

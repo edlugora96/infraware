@@ -1,20 +1,22 @@
 //! Stdlib-only exact-argument parser.
 //!
-//! Accepts exactly the approved grammar and nothing else. No `clap` or any
-//! external crate is used (design D7). The grammar is small and fixed, so a
-//! manual scanner with explicit rejection is the simplest correct approach.
+//! Accepts exactly the approved six-verb grammar and nothing else. No `clap`
+//! or any external crate is used (design D7). Removed legacy verbs (`init`,
+//! `analyze`, `insert`, `edit`), aliases (`set`, `rm`), and removed legacy
+//! flags (`--format`, `--suggest`) are rejected as usage errors.
 
 use std::collections::BTreeMap;
 
 use crate::command::Command;
 use crate::error::LibraryError;
-use crate::format::OutputFormat;
 
 /// Parse an argv slice (excluding the program name) into a typed [`Command`].
 ///
 /// Returns [`LibraryError::InvalidInput`] for any grammar violation: unknown
-/// command, unknown option, malformed shape, or invalid `--format` value. The
-/// `set`/`rm` aliases are treated as unknown commands and rejected.
+/// command, unknown option, or malformed shape. Only the six SQLite-backed
+/// verbs (`ingest`, `query`, `list`, `get`, `patch`, `remove`) are accepted;
+/// legacy verbs (`init`, `analyze`, `insert`, `edit`), aliases (`set`, `rm`),
+/// and removed legacy flags (`--format`, `--suggest`) are rejected.
 pub fn parse_args(argv: &[String]) -> Result<Command, LibraryError> {
     let mut iter = argv.iter();
 
@@ -25,95 +27,23 @@ pub fn parse_args(argv: &[String]) -> Result<Command, LibraryError> {
     };
 
     match command_token.as_str() {
-        "init" => parse_init(&mut iter),
-        "analyze" => parse_analyze(&mut iter),
-        "get" => parse_get(&mut iter),
-        "insert" => parse_insert(&mut iter),
-        "edit" => parse_edit(&mut iter),
-        "remove" => parse_remove(&mut iter),
-        "patch" => parse_patch(&mut iter),
-        "list" => parse_list(&mut iter),
         "ingest" => parse_ingest(&mut iter),
         "query" => parse_query(&mut iter),
-        // `set`/`rm` and any other token are unknown commands, never aliases.
+        "list" => parse_list(&mut iter),
+        "get" => parse_get(&mut iter),
+        "patch" => parse_patch(&mut iter),
+        "remove" => parse_remove(&mut iter),
+        // Legacy verbs, aliases, and any other token are unknown commands.
         other => Err(LibraryError::InvalidInput {
             message: format!("unknown command: {other}"),
         }),
     }
 }
 
-/// Parse `init` — takes no arguments.
-fn parse_init<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
-where
-    I: Iterator<Item = &'a String>,
-{
-    if let Some(extra) = iter.next() {
-        return Err(LibraryError::InvalidInput {
-            message: format!("init takes no arguments, found: {extra}"),
-        });
-    }
-    Ok(Command::Init)
-}
-
-/// Parse `analyze [--format markdown|json|yaml] [--suggest] [--details]`.
-/// Flags are order-independent and combinable; unknown flags are rejected.
-fn parse_analyze<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
-where
-    I: Iterator<Item = &'a String>,
-{
-    let mut format = OutputFormat::Markdown;
-    let mut suggest = false;
-    let mut details = false;
-    let mut saw_format = false;
-
-    while let Some(token) = iter.next() {
-        match token.as_str() {
-            "--format" => {
-                if saw_format {
-                    return Err(LibraryError::InvalidInput {
-                        message: "duplicate --format option".to_string(),
-                    });
-                }
-                saw_format = true;
-                let value = iter.next().ok_or_else(|| LibraryError::InvalidInput {
-                    message: "--format requires a value".to_string(),
-                })?;
-                format = OutputFormat::parse(value).ok_or_else(|| LibraryError::InvalidInput {
-                    message: format!("invalid --format value: {value}"),
-                })?;
-            }
-            "--suggest" => {
-                if suggest {
-                    return Err(LibraryError::InvalidInput {
-                        message: "duplicate --suggest option".to_string(),
-                    });
-                }
-                suggest = true;
-            }
-            "--details" => {
-                if details {
-                    return Err(LibraryError::InvalidInput {
-                        message: "duplicate --details option".to_string(),
-                    });
-                }
-                details = true;
-            }
-            other => {
-                return Err(LibraryError::InvalidInput {
-                    message: format!("unknown option for analyze: {other}"),
-                });
-            }
-        }
-    }
-
-    Ok(Command::Analyze {
-        format,
-        suggest,
-        details,
-    })
-}
-
-/// Parse `get <ID> [--format markdown|json|yaml]`.
+/// Parse `get <ID>` — exactly one positional id, no flags.
+///
+/// `--format` is a removed legacy option and is rejected as an unknown
+/// option, as is every other flag.
 fn parse_get<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
 where
     I: Iterator<Item = &'a String>,
@@ -122,146 +52,84 @@ where
         message: "get requires an <ID>".to_string(),
     })?;
 
-    let format = match iter.next() {
-        None => OutputFormat::Markdown,
-        Some(next) => match next.as_str() {
-            "--format" => {
-                let value = iter.next().ok_or_else(|| LibraryError::InvalidInput {
-                    message: "--format requires a value".to_string(),
-                })?;
-                OutputFormat::parse(value).ok_or_else(|| LibraryError::InvalidInput {
-                    message: format!("invalid --format value: {value}"),
-                })?
-            }
-            other => {
-                return Err(LibraryError::InvalidInput {
-                    message: format!("unknown option for get: {other}"),
-                });
-            }
-        },
-    };
-
-    if iter.next().is_some() {
+    if let Some(extra) = iter.next() {
+        if extra.starts_with("--") {
+            return Err(LibraryError::InvalidInput {
+                message: format!("unknown option for get: {extra}"),
+            });
+        }
         return Err(LibraryError::InvalidInput {
             message: "unexpected extra argument for get".to_string(),
         });
     }
 
-    Ok(Command::Get {
-        id: id.clone(),
-        format,
-    })
+    Ok(Command::Get { id: id.clone() })
 }
 
-/// Parse `insert <ID> --value <TEXT>`.
-fn parse_insert<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
-where
-    I: Iterator<Item = &'a String>,
-{
-    parse_id_value(iter, CommandKind::Insert)
-}
+/// Default page size for `list` when no limit positional is given.
+pub(crate) const LIST_DEFAULT_LIMIT: usize = 50;
+/// Maximum page size for `list`; larger limits clamp to this value.
+pub(crate) const LIST_MAX_LIMIT: usize = 500;
 
-/// Parse `edit <ID> --value <TEXT>`.
-fn parse_edit<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
-where
-    I: Iterator<Item = &'a String>,
-{
-    parse_id_value(iter, CommandKind::Edit)
-}
-
-enum CommandKind {
-    Insert,
-    Edit,
-}
-
-/// Shared parser for `<ID> --value <TEXT>` commands.
-fn parse_id_value<'a, I>(iter: &mut I, kind: CommandKind) -> Result<Command, LibraryError>
-where
-    I: Iterator<Item = &'a String>,
-{
-    let command_name = match kind {
-        CommandKind::Insert => "insert",
-        CommandKind::Edit => "edit",
-    };
-
-    let id = iter.next().ok_or_else(|| LibraryError::InvalidInput {
-        message: format!("{command_name} requires an <ID>"),
-    })?;
-
-    let value = parse_value_option(iter, command_name)?;
-
-    let command = match kind {
-        CommandKind::Insert => Command::Insert {
-            id: id.clone(),
-            value,
-        },
-        CommandKind::Edit => Command::Edit {
-            id: id.clone(),
-            value,
-        },
-    };
-    Ok(command)
-}
-
-/// Consume exactly `--value <TEXT>` and return the text.
-fn parse_value_option<'a, I>(iter: &mut I, command_name: &str) -> Result<String, LibraryError>
-where
-    I: Iterator<Item = &'a String>,
-{
-    let option = iter.next().ok_or_else(|| LibraryError::InvalidInput {
-        message: format!("{command_name} requires --value <TEXT>"),
-    })?;
-
-    if option.as_str() != "--value" {
+/// Parse a `list` limit/offset positional: ASCII digits only, fits `u64`.
+fn parse_list_count(raw: &str, kind: &str) -> Result<usize, LibraryError> {
+    if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
         return Err(LibraryError::InvalidInput {
-            message: format!("{command_name} requires --value <TEXT>, found: {option}"),
+            message: format!("list {kind} must be a non-negative integer, found: {raw}"),
         });
     }
-
-    let value = iter.next().ok_or_else(|| LibraryError::InvalidInput {
-        message: "--value requires a <TEXT> value".to_string(),
+    let value: u64 = raw.parse().map_err(|_| LibraryError::InvalidInput {
+        message: format!("list {kind} must be a non-negative integer, found: {raw}"),
     })?;
-
-    if iter.next().is_some() {
-        return Err(LibraryError::InvalidInput {
-            message: format!("unexpected extra argument for {command_name}"),
-        });
-    }
-
-    Ok(value.clone())
+    Ok(usize::try_from(value).unwrap_or(usize::MAX))
 }
 
-/// Parse `list [--format markdown|json|yaml]`.
+/// Parse `list [FILTER] [LIMIT] [OFFSET]` — up to three positionals, no flags.
+///
+/// The optional filter is validated through the existing metadata
+/// canonicalization path (same conventions as `query`) and returned as the
+/// owned canonical map. Limit defaults to 50 and clamps to max 500; offset
+/// defaults to 0. `--format` is a removed legacy option and is rejected
+/// as an unknown option, as is every other flag.
 fn parse_list<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
 where
     I: Iterator<Item = &'a String>,
 {
-    let mut format = OutputFormat::Markdown;
-    let mut saw_format = false;
-    while let Some(token) = iter.next() {
-        match token.as_str() {
-            "--format" => {
-                if saw_format {
-                    return Err(LibraryError::InvalidInput {
-                        message: "duplicate --format option".to_string(),
-                    });
-                }
-                saw_format = true;
-                let value = iter.next().ok_or_else(|| LibraryError::InvalidInput {
-                    message: "--format requires a value".to_string(),
-                })?;
-                format = OutputFormat::parse(value).ok_or_else(|| LibraryError::InvalidInput {
-                    message: format!("invalid --format value: {value}"),
-                })?;
-            }
-            other => {
-                return Err(LibraryError::InvalidInput {
-                    message: format!("unknown option for list: {other}"),
-                });
-            }
+    let owned: Vec<String> = iter.cloned().collect();
+    for token in &owned {
+        if token.starts_with("--") {
+            return Err(LibraryError::InvalidInput {
+                message: format!("unknown option for list: {token}"),
+            });
         }
     }
-    Ok(Command::List { format })
+    if owned.len() > 3 {
+        return Err(LibraryError::InvalidInput {
+            message: format!("unexpected extra argument for list: {}", owned[3]),
+        });
+    }
+    let filter_raw: Option<&str> = owned.first().map(String::as_str);
+    let canonical = crate::metadata::canonicalize_metadata(filter_raw)?;
+    let filter: BTreeMap<String, String> = if canonical == "{}" {
+        BTreeMap::new()
+    } else {
+        serde_json::from_str(&canonical).map_err(|e| LibraryError::InvalidInput {
+            message: format!("failed to parse canonical filter: {e}"),
+        })?
+    };
+    let mut limit = LIST_DEFAULT_LIMIT;
+    if let Some(raw) = owned.get(1) {
+        limit = parse_list_count(raw, "limit")?.min(LIST_MAX_LIMIT);
+    }
+    let mut offset = 0usize;
+    if let Some(raw) = owned.get(2) {
+        offset = parse_list_count(raw, "offset")?;
+    }
+    Ok(Command::List {
+        filter,
+        limit,
+        offset,
+    })
 }
 
 /// Parse `ingest <TEXT> [<METADATA-JSON>]` — exactly 1-2 positional args, no flags.
@@ -443,100 +311,55 @@ mod tests {
     }
 
     #[test]
-    fn parse_init_succeeds() {
-        assert_eq!(parse_args(&args(&["init"])), Ok(Command::Init));
+    fn six_verbs_parse() {
+        assert!(parse_args(&args(&["ingest", "hello"])).is_ok());
+        assert!(parse_args(&args(&["query", "hello"])).is_ok());
+        assert!(parse_args(&args(&["list"])).is_ok());
+        assert!(parse_args(&args(&["get", "1"])).is_ok());
+        assert!(parse_args(&args(&["patch", "1", "--text", "x"])).is_ok());
+        assert!(parse_args(&args(&["remove", "1"])).is_ok());
     }
 
     #[test]
-    fn parse_analyze_defaults_markdown() {
-        assert_eq!(
-            parse_args(&args(&["analyze"])),
-            Ok(Command::Analyze {
-                format: OutputFormat::Markdown,
-                suggest: false,
-                details: false,
-            })
-        );
+    fn reject_legacy_init() {
+        assert!(parse_args(&args(&["init"])).is_err());
     }
 
     #[test]
-    fn parse_analyze_format_json() {
-        assert_eq!(
-            parse_args(&args(&["analyze", "--format", "json"])),
-            Ok(Command::Analyze {
-                format: OutputFormat::Json,
-                suggest: false,
-                details: false,
-            })
-        );
+    fn reject_legacy_analyze() {
+        assert!(parse_args(&args(&["analyze"])).is_err());
+        assert!(parse_args(&args(&["analyze", "--format", "json"])).is_err());
+        assert!(parse_args(&args(&["analyze", "--suggest"])).is_err());
     }
 
     #[test]
-    fn parse_analyze_suggest() {
-        assert_eq!(
-            parse_args(&args(&["analyze", "--suggest"])),
-            Ok(Command::Analyze {
-                format: OutputFormat::Markdown,
-                suggest: true,
-                details: false,
-            })
-        );
+    fn reject_legacy_insert() {
+        assert!(parse_args(&args(&["insert", "abc", "--value", "x"])).is_err());
     }
 
     #[test]
-    fn parse_analyze_format_yaml_suggest() {
-        assert_eq!(
-            parse_args(&args(&["analyze", "--format", "yaml", "--suggest"])),
-            Ok(Command::Analyze {
-                format: OutputFormat::Yaml,
-                suggest: true,
-                details: false,
-            })
-        );
+    fn reject_legacy_edit() {
+        assert!(parse_args(&args(&["edit", "abc", "--value", "y"])).is_err());
     }
 
     #[test]
-    fn parse_get_defaults_markdown() {
+    fn parse_get_id_only() {
         assert_eq!(
-            parse_args(&args(&["get", "abc"])),
+            parse_args(&args(&["get", "3"])),
             Ok(Command::Get {
-                id: "abc".to_string(),
-                format: OutputFormat::Markdown,
+                id: "3".to_string(),
             })
         );
     }
 
     #[test]
-    fn parse_get_format_json() {
-        assert_eq!(
-            parse_args(&args(&["get", "abc", "--format", "json"])),
-            Ok(Command::Get {
-                id: "abc".to_string(),
-                format: OutputFormat::Json,
-            })
-        );
+    fn reject_get_format_flag() {
+        assert!(parse_args(&args(&["get", "3", "--format", "json"])).is_err());
     }
 
     #[test]
-    fn parse_insert_value() {
-        assert_eq!(
-            parse_args(&args(&["insert", "abc", "--value", "x"])),
-            Ok(Command::Insert {
-                id: "abc".to_string(),
-                value: "x".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn parse_edit_value() {
-        assert_eq!(
-            parse_args(&args(&["edit", "abc", "--value", "y"])),
-            Ok(Command::Edit {
-                id: "abc".to_string(),
-                value: "y".to_string(),
-            })
-        );
+    fn reject_get_suggest_flag() {
+        assert!(parse_args(&args(&["get", "3", "--suggest"])).is_err());
     }
 
     #[test]
@@ -685,12 +508,7 @@ mod tests {
 
     #[test]
     fn reject_unknown_option_on_get() {
-        assert!(parse_args(&args(&["get", "abc", "--verbose"])).is_err());
-    }
-
-    #[test]
-    fn reject_unknown_option_on_init() {
-        assert!(parse_args(&args(&["init", "--force"])).is_err());
+        assert!(parse_args(&args(&["get", "1", "--verbose"])).is_err());
     }
 
     #[test]
@@ -699,85 +517,41 @@ mod tests {
     }
 
     #[test]
-    fn reject_insert_without_value() {
-        assert!(parse_args(&args(&["insert", "abc"])).is_err());
-    }
-
-    #[test]
-    fn reject_insert_without_id() {
-        assert!(parse_args(&args(&["insert", "--value", "x"])).is_err());
-    }
-
-    #[test]
-    fn reject_invalid_format_xml() {
-        assert!(parse_args(&args(&["get", "abc", "--format", "xml"])).is_err());
-        assert!(parse_args(&args(&["analyze", "--format", "xml"])).is_err());
-    }
-
-    #[test]
     fn reject_extra_argument_get() {
-        assert!(parse_args(&args(&["get", "abc", "extra"])).is_err());
+        assert!(parse_args(&args(&["get", "1", "extra"])).is_err());
     }
 
     #[test]
-    fn parse_list_defaults_markdown() {
+    fn parse_list_no_args() {
         assert_eq!(
             parse_args(&args(&["list"])),
             Ok(Command::List {
-                format: OutputFormat::Markdown
+                filter: BTreeMap::new(),
+                limit: LIST_DEFAULT_LIMIT,
+                offset: 0,
             })
         );
     }
 
     #[test]
-    fn parse_list_format_json() {
-        assert_eq!(
-            parse_args(&args(&["list", "--format", "json"])),
-            Ok(Command::List {
-                format: OutputFormat::Json
-            })
-        );
+    fn reject_list_format_flag() {
+        assert!(parse_args(&args(&["list", "--format", "json"])).is_err());
     }
 
     #[test]
-    fn parse_list_format_yaml() {
-        assert_eq!(
-            parse_args(&args(&["list", "--format", "yaml"])),
-            Ok(Command::List {
-                format: OutputFormat::Yaml
-            })
-        );
-    }
-
-    #[test]
-    fn reject_list_details() {
-        assert!(parse_args(&args(&["list", "--details"])).is_err());
+    fn reject_list_suggest_flag() {
+        assert!(parse_args(&args(&["list", "--suggest"])).is_err());
     }
 
     #[test]
     fn reject_list_unknown_option() {
         assert!(parse_args(&args(&["list", "--verbose"])).is_err());
-        assert!(parse_args(&args(&["list", "--suggest"])).is_err());
-    }
-
-    #[test]
-    fn reject_list_duplicate_format() {
-        assert!(parse_args(&args(&["list", "--format", "json", "--format", "yaml"])).is_err());
-    }
-
-    #[test]
-    fn reject_list_invalid_format() {
-        assert!(parse_args(&args(&["list", "--format", "xml"])).is_err());
+        assert!(parse_args(&args(&["list", "--details"])).is_err());
     }
 
     #[test]
     fn reject_list_extra_positional() {
         assert!(parse_args(&args(&["list", "extra"])).is_err());
-    }
-
-    #[test]
-    fn reject_add_command() {
-        assert!(parse_args(&args(&["add", "x", "--value", "y"])).is_err());
     }
 
     #[test]

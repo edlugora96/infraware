@@ -1,13 +1,13 @@
-//! `infraware` — caller-agnostic CLI foundation (Plan 1).
+//! `infraware` — caller-agnostic CLI foundation for the six SQLite-backed RAG verbs.
 //!
-//! This crate establishes the single-package Rust boundary that later plans
-//! (CRUD lifecycle, projections, analysis/suggestions) build on. It intentionally
-//! contains **no** business logic, persistence, scanning, projections, or
-//! suggestions, and **no** LLM/network/provider/plugin/workspace/caller-specific
-//! code. Everything reachable from the binary goes through one dispatch seam.
+//! This crate establishes the single-package Rust boundary for `ingest`,
+//! `query`, `list`, `get`, `patch`, and `remove` against the SQLite vector
+//! index. It intentionally contains **no** LLM/network/provider/plugin/workspace/
+//! caller-specific code. Everything reachable from the binary goes through one
+//! dispatch seam.
 //!
 //! Module layout:
-//! - [`format`] — shared typed output-format value (Markdown default).
+//! - [`format`] — shared typed output-format value (JSON).
 //! - [`command`] — typed command-request enum (the parse result).
 //! - [`error`] — typed library error model.
 //! - [`parser`] — stdlib-only exact-argument parser.
@@ -16,45 +16,29 @@
 
 #![deny(unsafe_code)]
 
-mod analyze;
 mod command;
-mod definition;
-mod definition_model;
 mod dispatch;
-mod document;
-mod document_parser;
 mod embed;
 mod error;
 mod format;
-mod guidance;
 mod identity;
 mod ingest;
-mod lifecycle;
 mod metadata;
 mod model_cache;
 mod parser;
 mod patch;
-mod persistence;
-mod projection;
 mod query;
+mod records;
 mod remove;
 mod vec_shim;
 mod vec_store;
 
 pub use command::Command;
-pub use definition::{edit, get, insert, remove};
-pub use definition_model::Definition;
 pub use dispatch::{DispatchOutput, dispatch};
-pub use document::{DefinitionBlock, Document, Span};
-pub use document_parser::{CLOSE, OPEN_PREFIX, OPEN_SUFFIX, parse_document, serialize_document};
 pub use error::LibraryError;
 pub use format::OutputFormat;
-pub use guidance::{CATALOG, render_comments};
 pub use identity::validate_id;
-pub use lifecycle::{init, init_markdown};
 pub use parser::parse_args;
-pub use persistence::{CANONICAL_DIR, CANONICAL_FILE, canonical_path, write_atomic};
-pub use projection::serialize_definition;
 
 use std::io::{self, Write};
 
@@ -63,8 +47,8 @@ use std::io::{self, Write};
 /// operational non-zero status so tooling can tell the two apart.
 pub const EXIT_USAGE: u8 = 2;
 
-/// Operational non-zero status for dispatch/operational failures (missing
-/// definition, uninitialized storage, malformed document, I/O).
+/// Operational non-zero status for dispatch/operational failures (record-not-found,
+/// missing or incompatible store, backend errors).
 pub const EXIT_FAILURE: u8 = 1;
 
 /// Thin binary adapter: parse argv → build typed [`Command`] → invoke the single
