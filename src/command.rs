@@ -4,6 +4,8 @@
 //! exact approved grammar and routes it through the single [`dispatch`](crate::dispatch::dispatch)
 //! boundary. The library never sees raw argv.
 
+use std::collections::BTreeMap;
+
 use crate::format::OutputFormat;
 
 /// A typed CLI command request.
@@ -70,6 +72,14 @@ pub enum Command {
         /// Raw metadata JSON, if supplied.
         metadata_raw: Option<String>,
     },
+    /// `query <TEXT> [<FILTER-JSON>]` — read-only retrieval (behavior deferred
+    /// to later tasks; parser acceptance and dispatch execution not yet wired).
+    Query {
+        /// Owned query text, preserved exactly.
+        text: String,
+        /// Canonical owned filter data with byte-ordered keys (`{}` when absent).
+        filter: BTreeMap<String, String>,
+    },
 }
 
 impl Command {
@@ -84,6 +94,7 @@ impl Command {
             Command::Remove { .. } => "remove",
             Command::List { .. } => "list",
             Command::Ingest { .. } => "ingest",
+            Command::Query { .. } => "query",
         }
     }
 }
