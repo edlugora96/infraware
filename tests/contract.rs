@@ -1,9 +1,9 @@
 //! Contract (integration) tests for the thin binary adapter: stream separation,
 //! exit-status mapping, and caller-independent request construction.
 
-use infraware::{Command, OutputFormat, run};
+use infraware::{Command, run};
 use std::io::Cursor;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 /// Serializes every test that observes or mutates the process working directory.
@@ -28,11 +28,9 @@ fn execute(argv: &[&str]) -> (Vec<u8>, Vec<u8>, u8) {
 /// directory for the lifetime of the guard, restoring the original working
 /// directory on drop (including on panic).
 ///
-/// `run`'s `init` resolves `std::env::current_dir()` and writes
-/// `.infraware/ARCHITECTURE.md` there. Real-binary init contract tests must not
-/// pollute the repository, so they execute under this guard. (Tests run in
-/// parallel, but only the init contract test performs a working-directory write;
-/// all other contract assertions are independent of the working directory.)
+/// `run` resolves the repository root via `std::env::current_dir()`, so tests
+/// that seed a SQLite index (`ingest`) must not pollute the repository and
+/// execute under this guard. Rejection tests perform no storage writes.
 struct TempCwd {
     _lock: MutexGuard<'static, ()>,
     original: PathBuf,
@@ -71,86 +69,81 @@ impl Drop for TempCwd {
     }
 }
 
-/// `init` rooted at the repository's working directory: the canonical path that
-/// the real binary would create when run from `cwd`.
-fn canonical_path_for(cwd: &Path) -> PathBuf {
-    cwd.join(".infraware").join("ARCHITECTURE.md")
-}
-
 #[test]
-fn analyze_empty_succeeds_with_status_zero_and_no_stderr() {
-    // Serialized against TempCwd holders: `run` resolves CWD as root.
-    let _lock = CWD_LOCK.lock().expect("CWD lock poisoned");
-    // `analyze` now yields a well-formed, non-empty report body (the deferred
-    // Plan 4 behavior): status 0, diagnostics on stderr only when something is
-    // actually wrong. Run against the repository root (read-only scan).
-    let (stdout, stderr, status) = execute(&["analyze", "--format", "json"]);
-    assert_eq!(status, 0);
-    assert!(stderr.is_empty(), "no diagnostic for successful analyze");
-    assert!(
-        !stdout.is_empty(),
-        "analyze now emits a structured report body"
-    );
-    let out = String::from_utf8(stdout).expect("utf8 stdout");
-    assert!(out.contains("\"languages\""), "report has category keys");
-    assert!(out.contains("\"suggestions\""), "report has suggestion key");
-}
-
-#[test]
-fn analyze_suggest_succeeds_status_zero() {
-    let _lock = CWD_LOCK.lock().expect("CWD lock poisoned");
-    let (_, stderr, status) = execute(&["analyze", "--suggest"]);
-    assert_eq!(status, 0);
-    assert!(stderr.is_empty());
-}
-
-#[test]
-fn init_succeeds_status_zero() {
-    // Isolate the real-binary init in a temp working directory so `cargo test`
-    // never creates `.infraware/ARCHITECTURE.md` in the repository. The process
-    // CWD is restored (and the temp dir removed) when the guard drops.
+fn init_rejected_as_usage_with_empty_stdout() {
+    // The legacy `init` verb no longer exists: usage status 2 with empty
+    // stdout, and no storage artifact is created in the working directory.
     let _guard = TempCwd::new();
-    let (_, stderr, status) = execute(&["init"]);
-    assert_eq!(status, 0);
-    assert!(stderr.is_empty());
-    // The canonical storage was created inside the temp working directory, not
-    // the repository: assert it exists at the (temp) CWD the binary ran from.
-    let created = canonical_path_for(
-        std::env::current_dir()
+    let (stdout, stderr, status) = execute(&["init"]);
+    assert_eq!(status, infraware::EXIT_USAGE);
+    assert!(stdout.is_empty(), "no stdout on usage rejection");
+    assert!(!stderr.is_empty());
+    assert!(
+        !std::env::current_dir()
             .expect("temp CWD is set by the guard")
-            .as_path(),
-    );
-    assert!(
-        created.exists(),
-        "init created .infraware/ARCHITECTURE.md in temp CWD"
+            .join(".infraware")
+            .exists(),
+        "rejected init creates no storage"
     );
 }
 
 #[test]
-fn get_missing_definition_is_nonzero_and_diagnostic_on_stderr_only() {
-    // Isolate from the seeded repository so storage-backed commands do not read
-    // or write the canonical store under the real working directory.
+fn analyze_rejected_as_usage_with_empty_stdout() {
+    // The legacy `analyze` verb no longer exists: usage status 2 with empty
+    // stdout, diagnostics on stderr only.
+    let _lock = CWD_LOCK.lock().expect("CWD lock poisoned");
+    for argv in [
+        ["analyze"].as_slice(),
+        ["analyze", "--format", "json"].as_slice(),
+        ["analyze", "--suggest"].as_slice(),
+    ] {
+        let (stdout, stderr, status) = execute(argv);
+        assert_eq!(status, infraware::EXIT_USAGE);
+        assert!(stdout.is_empty(), "no stdout on usage rejection");
+        assert!(!stderr.is_empty());
+    }
+}
+
+#[test]
+fn get_missing_store_is_nonzero_and_diagnostic_on_stderr_only() {
+    // Isolate from any index so the read fails closed: operational status
+    // with the diagnostic on stderr and empty stdout, creating nothing.
     let _guard = TempCwd::new();
-    let (stdout, stderr, status) = execute(&["get", "abc"]);
+    let (stdout, stderr, status) = execute(&["get", "1"]);
     assert_ne!(status, 0);
     assert!(!stderr.is_empty(), "diagnostic must be on stderr");
-    assert!(stdout.is_empty(), "no structured output on missing get");
+    assert!(stdout.is_empty(), "no structured output on failed get");
 }
 
 #[test]
-fn insert_requires_storage_nonzero_stderr_only() {
+fn get_non_integer_id_is_usage_status() {
+    // Record ids are positive integers: a non-integer id is a usage error
+    // (status 2) with empty stdout, before any storage work.
     let _guard = TempCwd::new();
-    let (stdout, stderr, status) = execute(&["insert", "abc", "--value", "x"]);
-    assert_ne!(status, 0);
+    let (stdout, stderr, status) = execute(&["get", "abc"]);
+    assert_eq!(status, infraware::EXIT_USAGE);
     assert!(!stderr.is_empty());
     assert!(stdout.is_empty());
 }
 
 #[test]
-fn edit_requires_storage_nonzero_stderr_only() {
+fn insert_rejected_as_usage_with_empty_stdout() {
+    // The legacy `insert` verb no longer exists: usage status 2 with empty
+    // stdout, regardless of storage state.
+    let _guard = TempCwd::new();
+    let (stdout, stderr, status) = execute(&["insert", "abc", "--value", "x"]);
+    assert_eq!(status, infraware::EXIT_USAGE);
+    assert!(!stderr.is_empty());
+    assert!(stdout.is_empty());
+}
+
+#[test]
+fn edit_rejected_as_usage_with_empty_stdout() {
+    // The legacy `edit` verb no longer exists: usage status 2 with empty
+    // stdout, regardless of storage state.
     let _guard = TempCwd::new();
     let (stdout, stderr, status) = execute(&["edit", "abc", "--value", "y"]);
-    assert_ne!(status, 0);
+    assert_eq!(status, infraware::EXIT_USAGE);
     assert!(!stderr.is_empty());
     assert!(stdout.is_empty());
 }
@@ -191,11 +184,18 @@ fn rm_alias_rejected_as_usage() {
 }
 
 #[test]
-fn invalid_format_is_usage_status() {
-    let (stdout, stderr, status) = execute(&["get", "abc", "--format", "xml"]);
-    assert_eq!(status, infraware::EXIT_USAGE);
-    assert!(!stderr.is_empty());
-    assert!(stdout.is_empty());
+fn legacy_format_flag_no_longer_parses() {
+    // `--format` served only the Markdown path: it is now an unknown option
+    // (usage status 2) on every verb that once accepted it, with empty stdout.
+    for argv in [
+        ["get", "1", "--format", "json"].as_slice(),
+        ["list", "--format", "json"].as_slice(),
+    ] {
+        let (stdout, stderr, status) = execute(argv);
+        assert_eq!(status, infraware::EXIT_USAGE);
+        assert!(!stderr.is_empty());
+        assert!(stdout.is_empty());
+    }
 }
 
 #[test]
@@ -208,22 +208,35 @@ fn malformed_get_no_id_is_usage_status() {
 
 #[test]
 fn unknown_option_is_usage_status() {
-    let (stdout, stderr, status) = execute(&["init", "--force"]);
+    let (stdout, stderr, status) = execute(&["list", "--force"]);
     assert_eq!(status, infraware::EXIT_USAGE);
     assert!(!stderr.is_empty());
     assert!(stdout.is_empty());
 }
 
 #[test]
-fn explicit_json_format_honored_in_accepted_shape() {
-    // Accepted shapes do not error; verify via the parser-level request equality.
-    let args: Vec<String> = vec!["get".into(), "abc".into(), "--format".into(), "json".into()];
-    let cmd = infraware::parse_args(&args).expect("accepted shape");
+fn legacy_format_shape_is_rejected_at_parse_level() {
+    // Accepted shapes do not error; `--format` is no longer an accepted
+    // shape on any verb, so the parser rejects it as a usage error.
+    let args: Vec<String> = vec!["get".into(), "1".into(), "--format".into(), "json".into()];
+    assert!(infraware::parse_args(&args).unwrap_err().is_usage());
+    let args: Vec<String> = vec!["list".into(), "--format".into(), "json".into()];
+    assert!(infraware::parse_args(&args).unwrap_err().is_usage());
+    // The bare six-verb shapes still parse.
+    let args: Vec<String> = vec!["get".into(), "1".into()];
     assert_eq!(
-        cmd,
+        infraware::parse_args(&args).expect("accepted shape"),
         Command::Get {
-            id: "abc".to_string(),
-            format: OutputFormat::Json,
+            id: "1".to_string(),
+        }
+    );
+    let args: Vec<String> = vec!["list".into()];
+    assert_eq!(
+        infraware::parse_args(&args).expect("accepted shape"),
+        Command::List {
+            filter: Default::default(),
+            limit: 50,
+            offset: 0,
         }
     );
 }
@@ -234,18 +247,8 @@ fn caller_independent_request_construction_is_equal() {
     let _lock = CWD_LOCK.lock().expect("CWD lock poisoned");
     // Two independent "callers" parse the same command string and must obtain
     // equivalent typed requests routed through the identical boundary.
-    let a: Vec<String> = vec![
-        "analyze".into(),
-        "--format".into(),
-        "yaml".into(),
-        "--suggest".into(),
-    ];
-    let b: Vec<String> = vec![
-        "analyze".into(),
-        "--format".into(),
-        "yaml".into(),
-        "--suggest".into(),
-    ];
+    let a: Vec<String> = vec!["patch".into(), "3".into(), "--text".into(), "hello".into()];
+    let b: Vec<String> = vec!["patch".into(), "3".into(), "--text".into(), "hello".into()];
     let ca = infraware::parse_args(&a).expect("caller A");
     let cb = infraware::parse_args(&b).expect("caller B");
     assert_eq!(ca, cb);
