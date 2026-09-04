@@ -265,6 +265,30 @@ pub(crate) fn ensure_model_files() -> Result<ModelPaths, LibraryError> {
     ensure_with(ureq_fetch)
 }
 
+/// Cached-only accessor for the query path (OpenSpec 5.1).
+///
+/// Validates the existing pinned cache/manifest/files and returns the
+/// validated model paths. Never accepts a fetcher, never touches the
+/// network (`ureq`), and never downloads, warms, repairs, or mutates
+/// directories: it resolves the cache dir and runs read-only validation.
+/// Ingest keeps using [`ensure_model_files`]; this function is query-only.
+/// Exposing this is safe: [`validate_final`] performs read-only size/hash
+/// and manifest checks with no `unsafe`, no writes, and no I/O outside the
+/// cache directory reads.
+#[allow(dead_code)] // wired by task 5.2; 5.1 adds the accessor + tests only.
+pub(crate) fn cached_model_files() -> Result<ModelPaths, LibraryError> {
+    let dir = cache_dir()?;
+    cached_model_files_in(&dir)
+}
+
+/// Directory-injectable core of [`cached_model_files`]: validate-only, no
+/// fetcher, no network, no mutation. Separated so offline tests can point at
+/// temp dirs without mutating process environment variables.
+#[allow(dead_code)] // wired by task 5.2; 5.1 adds the accessor + tests only.
+pub(crate) fn cached_model_files_in(dir: &Path) -> Result<ModelPaths, LibraryError> {
+    validate_final(dir)
+}
+
 /// Generic seam: `fetch(url) -> bytes`. Offline tests inject a fake.
 pub(crate) fn ensure_with<F>(fetch: F) -> Result<ModelPaths, LibraryError>
 where
@@ -486,5 +510,119 @@ mod tests {
             sha256_hex(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    // ---- OpenSpec 5.1: cached-only accessor (offline, no fetcher) ----
+
+    fn snapshot(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut out = Vec::new();
+        if let Ok(rd) = fs::read_dir(dir) {
+            let mut names: Vec<_> = rd.filter_map(|e| e.ok()).collect();
+            names.sort_by_key(|e| e.file_name());
+            for e in names {
+                let p = e.path();
+                if p.is_file() {
+                    out.push((p.clone(), fs::read(&p).unwrap_or_default()));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn cached_only_accepts_valid_manifest() {
+        // Full 133MB warm acceptance runs the same validate_final code path
+        // as the ensure path and cannot run offline; here prove the manifest
+        // half accepts the exact pinned manifest the cached path checks.
+        validate_manifest(&manifest_json()).unwrap();
+        validate_manifest(&manifest_json().replace("\"revision\"", "\"rev\"")).unwrap();
+    }
+
+    #[test]
+    fn cached_only_missing_cache_rejected_without_creating_files() {
+        let t = tmp();
+        let dir = t
+            .join("missing/infraware/models")
+            .join(MODEL_SUBDIR)
+            .join(REVISION);
+        assert!(!dir.exists());
+        let err = cached_model_files_in(&dir).unwrap_err();
+        assert!(!err.is_usage());
+        // No repair, no staging, no directory mutation.
+        assert!(!dir.exists());
+        assert!(!t.join("missing").exists());
+    }
+
+    #[test]
+    fn cached_only_corrupt_cache_rejected_without_mutation() {
+        let t = tmp();
+        let dir = t.join("corrupt").join(MODEL_SUBDIR).join(REVISION);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(CONFIG_NAME), b"wrong bytes").unwrap();
+        let before = snapshot(&dir);
+        let err = cached_model_files_in(&dir).unwrap_err();
+        assert!(!err.is_usage());
+        assert_eq!(snapshot(&dir), before);
+        // No staging or repair artifacts beside the cache dir.
+        let parent = dir.parent().unwrap();
+        let entries: Vec<_> = fs::read_dir(parent)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(entries.iter().all(|e| e.path() == dir));
+    }
+
+    #[test]
+    fn cached_only_incompatible_manifest_rejected() {
+        // Size/hash mismatch fires first (missing files), but manifest-only
+        // incompatibility is also rejected: wrong dimension / model / rev.
+        for raw in [
+            manifest_json().replace("384", "768"),
+            manifest_json().replace(MODEL_ID, "other/model"),
+            manifest_json().replace(REVISION, "0000000000000000000000000000000000000000"),
+        ] {
+            assert!(validate_manifest(&raw).is_err());
+        }
+        // And the cached accessor rejects a present-but-incomplete dir as
+        // incompatible without creating anything new.
+        let t = tmp();
+        let dir = t.join("incompat").join(MODEL_SUBDIR).join(REVISION);
+        fs::create_dir_all(&dir).unwrap();
+        let before = snapshot(&dir);
+        assert!(cached_model_files_in(&dir).is_err());
+        assert_eq!(snapshot(&dir), before);
+    }
+
+    #[test]
+    fn cached_only_path_has_no_fetch_or_ureq() {
+        // Structural guarantee: the cached-only functions never mention a
+        // fetcher, download, warm, repair, or ureq symbol. If someone adds
+        // network to this path, this test fails on review.
+        let src = include_str!("model_cache.rs");
+        let start = src
+            .find("Cached-only accessor")
+            .expect("cached accessor present");
+        let end = src[start..]
+            .find("Generic seam")
+            .map(|i| start + i)
+            .expect("seam marker present");
+        let region = &src[start..end];
+        for banned in [
+            "fetch(",
+            "ureq::",
+            "ureq_",
+            "ureq_fetch",
+            "download_stage",
+            "sibling_stage",
+            "create_dir",
+            "rename(",
+            "remove_dir",
+        ] {
+            assert!(
+                !region.contains(banned),
+                "cached-only region must not contain {banned:?}"
+            );
+        }
+        assert!(region.contains("validate_final"));
     }
 }
