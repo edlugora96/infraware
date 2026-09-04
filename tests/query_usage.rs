@@ -168,8 +168,8 @@ fn query_unquoted_filter_is_usage() {
 // Storage cases run the in-process `run` adapter (no environment mutation).
 // Model-cache cases run the compiled binary as a subprocess with
 // `current_dir` pointed at the guarded temp dir and a controlled
-// `XDG_CACHE_HOME`, so no process-global environment mutation (and no
-// `unsafe`) is needed. Embed/`vec` runtime failures past the setup gate
+// `XDG_CACHE_HOME`, so no process-global environment mutation (and no FFI)
+// is needed. Embed/`vec` runtime failures past the setup gate
 // require the full pinned model cache (133 MB weights via network) and are
 // NOT inducible offline here; they are flagged in the task report rather
 // than weakened.

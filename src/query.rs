@@ -556,6 +556,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Task 2.5: dispatched query on a missing index fails operationally
+    /// and creates no files or directories (no index, no sidecars).
+    #[test]
+    fn dispatch_query_on_missing_index_creates_nothing() {
+        let root = temp_root_43();
+        let err = crate::dispatch::dispatch(
+            crate::Command::Query {
+                text: "hello".to_string(),
+                filter: BTreeMap::new(),
+            },
+            &root,
+        )
+        .unwrap_err();
+        assert_safe_operational(&err, &root);
+        let entries: Vec<_> = std::fs::read_dir(&root).unwrap().collect();
+        assert!(
+            entries.is_empty(),
+            "query on missing index must create no files: {entries:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn filter_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
             .iter()
@@ -1570,8 +1592,11 @@ mod tests {
             !vprod.contains("Statement"),
             "store must not store or return a Statement"
         );
+        // `QueryReturnedNoRows` is a legitimate error variant (task 5.3),
+        // not a held iterator; scrub it before checking for the Rows type.
+        let scrubbed = vprod.replace("QueryReturnedNoRows", "");
         assert!(
-            !vprod.contains("Rows"),
+            !scrubbed.contains("Rows"),
             "store must not leak a rows iterator"
         );
         let verify = vprod
