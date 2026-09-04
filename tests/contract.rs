@@ -4,6 +4,16 @@
 use infraware::{Command, OutputFormat, run};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
+
+/// Serializes every test that observes or mutates the process working directory.
+///
+/// `run` resolves the repository root via `std::env::current_dir()`, so
+/// CWD-mutating `TempCwd` guards must not run concurrently with any test that
+/// reads the CWD (a parallel test would otherwise observe another test's temp
+/// dir). Holding this lock for the lifetime of each `TempCwd` (and for the
+/// duration of CWD-reading `run`/`dispatch` tests) serializes the CWD access.
+static CWD_LOCK: Mutex<()> = Mutex::new(());
 
 /// Run `run` against a string argv and capture stdout/stderr bytes and status.
 fn execute(argv: &[&str]) -> (Vec<u8>, Vec<u8>, u8) {
@@ -24,13 +34,15 @@ fn execute(argv: &[&str]) -> (Vec<u8>, Vec<u8>, u8) {
 /// parallel, but only the init contract test performs a working-directory write;
 /// all other contract assertions are independent of the working directory.)
 struct TempCwd {
+    _lock: MutexGuard<'static, ()>,
     original: PathBuf,
     _temp: PathBuf,
 }
 
 impl TempCwd {
-    /// Create a unique temp dir and make it the current directory.
+    /// Acquire the CWD lock, create a unique temp dir and make it the current directory.
     fn new() -> TempCwd {
+        let _lock = CWD_LOCK.lock().expect("CWD lock poisoned");
         let original = std::env::current_dir().expect("resolve original working directory");
         let temp = std::env::temp_dir().join(format!(
             "infraware-contract-{}-{}",
@@ -43,6 +55,7 @@ impl TempCwd {
         std::fs::create_dir_all(&temp).expect("create temp working directory");
         std::env::set_current_dir(&temp).expect("enter temp working directory");
         TempCwd {
+            _lock,
             original,
             _temp: temp,
         }
@@ -66,6 +79,8 @@ fn canonical_path_for(cwd: &Path) -> PathBuf {
 
 #[test]
 fn analyze_empty_succeeds_with_status_zero_and_no_stderr() {
+    // Serialized against TempCwd holders: `run` resolves CWD as root.
+    let _lock = CWD_LOCK.lock().expect("CWD lock poisoned");
     // `analyze` now yields a well-formed, non-empty report body (the deferred
     // Plan 4 behavior): status 0, diagnostics on stderr only when something is
     // actually wrong. Run against the repository root (read-only scan).
@@ -83,6 +98,7 @@ fn analyze_empty_succeeds_with_status_zero_and_no_stderr() {
 
 #[test]
 fn analyze_suggest_succeeds_status_zero() {
+    let _lock = CWD_LOCK.lock().expect("CWD lock poisoned");
     let (_, stderr, status) = execute(&["analyze", "--suggest"]);
     assert_eq!(status, 0);
     assert!(stderr.is_empty());
@@ -214,6 +230,8 @@ fn explicit_json_format_honored_in_accepted_shape() {
 
 #[test]
 fn caller_independent_request_construction_is_equal() {
+    // Serialized: dispatch with relative root `.` resolves against the CWD.
+    let _lock = CWD_LOCK.lock().expect("CWD lock poisoned");
     // Two independent "callers" parse the same command string and must obtain
     // equivalent typed requests routed through the identical boundary.
     let a: Vec<String> = vec![
