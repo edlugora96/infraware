@@ -57,3 +57,12 @@ If your npm version does not support `npx github:` URLs, use the global install 
 ### Updating
 
 No internal updater. To update: `npm install -g github:edlugora96/infraware#<new-tag>`
+
+### CLI (SQLite RAG verbs only)
+
+Six verbs: `ingest`, `query`, `list`, `get`, `patch`, `remove` against `<project>/.infraware/vec-index.sqlite`.
+
+- `ingest` lazily creates the index; `query`/`list`/`get` are read-only and never create, migrate, or repair.
+- `list` defaults: limit 50, max 500, offset 0, ascending id, snapshot-consistent `total`; records carry exactly `id`, `text`, `metadata`, `created_at`.
+- Usage/validation failures exit 2 with empty stdout; missing or incompatible store exits 1 with one `error:` line on stderr.
+- Legacy Markdown verbs (`init`, `analyze`, `insert`, `edit`) and aliases are removed.
