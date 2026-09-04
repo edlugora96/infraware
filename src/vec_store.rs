@@ -189,6 +189,50 @@ fn decode_embedding_384(blob: &[u8]) -> Result<Vec<f32>, String> {
     Ok(out)
 }
 
+/// Known-schema probe: does `records` lack the `created_ms` column?
+///
+/// SELECT-only (`PRAGMA table_info`); never mutates. `false` covers both
+/// the current schema and a missing `records` table (fresh DB: nothing to
+/// migrate; `init_schema` creates it).
+fn records_missing_created_ms(conn: &rusqlite::Connection) -> bool {
+    let mut stmt = match conn.prepare("PRAGMA table_info(records)") {
+        Ok(stmt) => stmt,
+        Err(_) => return false,
+    };
+    let names: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default();
+    if names.is_empty() {
+        return false;
+    }
+    !names.iter().any(|n| n == "created_ms")
+}
+
+/// Ingest-only lazy migration for the single known legacy shape.
+///
+/// Applies only when an existing index has a `records` table without
+/// `created_ms`: adds the column with the canonical default and backfills
+/// any NULL rows. No other schema change is attempted; unknown shapes are
+/// left for the compatibility gate to reject. Runs only on the ingest
+/// lane (`open`); read-only and RW-existing lanes never migrate.
+fn migrate_known_schema(conn: &rusqlite::Connection) -> Result<(), LibraryError> {
+    if !records_missing_created_ms(conn) {
+        return Ok(());
+    }
+    conn.execute(
+        "ALTER TABLE records ADD COLUMN created_ms INTEGER NOT NULL DEFAULT 0",
+        [],
+    )
+    .map_err(io_err)?;
+    conn.execute(
+        "UPDATE records SET created_ms=(strftime('%s','now')*1000) WHERE created_ms=0",
+        [],
+    )
+    .map_err(io_err)?;
+    Ok(())
+}
+
 impl SqliteStore {
     pub(crate) fn open(root: &Path) -> Result<Self, LibraryError> {
         let dir = root.join(".infraware");
@@ -200,6 +244,11 @@ impl SqliteStore {
             _snapshot: None,
         };
         this.init_schema()?;
+        // Task 2.6: ingest-only lazy migration of known schemas. Unknown
+        // or still-incompatible shapes fail closed via the same gate the
+        // read/mutation lanes use, so ingest never silently adopts them.
+        migrate_known_schema(&this.conn)?;
+        this.verify_query_compatible()?;
         Ok(this)
     }
 
@@ -243,6 +292,12 @@ impl SqliteStore {
         self._snapshot.as_ref().map(|s| s.path.clone())
     }
 
+    /// Execute SQL in tests without exposing the production connection.
+    #[cfg(test)]
+    pub(crate) fn execute_test_sql(&self, sql: &str) -> rusqlite::Result<()> {
+        self.conn.execute_batch(sql)
+    }
+
     /// Read-only compatibility gate for the query path (task 4.2).
     ///
     /// Checks the expected query index schema and all six `model_meta`
@@ -269,7 +324,13 @@ impl SqliteStore {
         if !(vec_sql.contains("float[384]") && vec_sql.contains("cosine")) {
             return Err(incompatible("vecs table"));
         }
-        for table in ["records", "meta_kv", "model_meta"] {
+        for table in [
+            "records",
+            "meta_kv",
+            "model_meta",
+            "queries",
+            "query_fact_links",
+        ] {
             let present: Option<String> = self
                 .conn
                 .query_row(
@@ -282,7 +343,9 @@ impl SqliteStore {
                 return Err(incompatible(match table {
                     "records" => "records table",
                     "meta_kv" => "meta_kv table",
-                    _ => "model_meta table",
+                    "model_meta" => "model_meta table",
+                    "queries" => "queries table",
+                    _ => "query_fact_links table",
                 }));
             }
         }
@@ -296,6 +359,13 @@ impl SqliteStore {
             .ok();
         if idx.as_deref() != Some("idx_meta_kv_kv") {
             return Err(incompatible("meta index"));
+        }
+        // Task 2.6: the ingest-only lazy migration owns the legacy shape
+        // without `created_ms`. Every other lane (including this gate, used
+        // by query/list/get/patch/remove) rejects it as incompatible so
+        // only ingest ever migrates.
+        if records_missing_created_ms(&self.conn) {
+            return Err(incompatible("records table"));
         }
         // All six model_meta values must match exactly.
         for (key, expected) in [
@@ -486,10 +556,16 @@ impl SqliteStore {
         crate::vec_shim::ensure_registered();
         // The file exists, so this opens read-write without creating.
         let conn = rusqlite::Connection::open(&path).map_err(io_err)?;
-        Ok(Self {
+        let this = Self {
             conn,
             _snapshot: None,
-        })
+        };
+        // Task 2.6: fail closed on an incompatible index (wrong schema or
+        // model_meta values). The check is SELECT-only, so rejection leaves
+        // the existing file byte-identical and creates nothing. Callers map
+        // the error to the generic operational error (status 1).
+        this.verify_query_compatible()?;
+        Ok(this)
     }
 
     /// Hard-delete one record across `meta_kv`, `vecs`, and `records` atomically.
@@ -525,6 +601,16 @@ impl SqliteStore {
             .map_err(io_err)?;
             tx.execute("DELETE FROM vecs WHERE rowid=?1", rusqlite::params![id])
                 .map_err(io_err)?;
+            tx.execute(
+                "DELETE FROM query_fact_links WHERE fact_id=?1",
+                rusqlite::params![id],
+            )
+            .map_err(io_err)?;
+            tx.execute(
+                "DELETE FROM pair_relations WHERE fact_id=?1 OR related_id=?1",
+                rusqlite::params![id],
+            )
+            .map_err(io_err)?;
             let removed = tx
                 .execute("DELETE FROM records WHERE id=?1", rusqlite::params![id])
                 .map_err(io_err)?;
@@ -654,6 +740,41 @@ impl SqliteStore {
             })
     }
 
+    /// Persist one successful query and its top-fact link atomically.
+    pub(crate) fn persist_query(
+        &mut self,
+        query: &str,
+        filter: &str,
+        fact_id: i64,
+        created_at: i64,
+    ) -> Result<crate::query::Link, LibraryError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(io_err)?;
+        let result: Result<crate::query::Link, LibraryError> = (|| {
+            tx.execute(
+                "INSERT INTO queries(query,filter,created_at) VALUES(?1,?2,?3)",
+                rusqlite::params![query, filter, created_at],
+            )
+            .map_err(io_err)?;
+            let query_id = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO query_fact_links(query_id,fact_id,created_at) VALUES(?1,?2,?3)",
+                rusqlite::params![query_id, fact_id, created_at],
+            )
+            .map_err(io_err)?;
+            Ok(crate::query::Link {
+                fact_id,
+                query_id,
+                created_at,
+            })
+        })();
+        let link = result?;
+        tx.commit().map_err(io_err)?;
+        Ok(link)
+    }
+
     fn init_schema(&self) -> Result<(), LibraryError> {
         self.conn
             .execute_batch(
@@ -673,6 +794,26 @@ impl SqliteStore {
                    PRIMARY KEY(record_id,k)
                  );
                  CREATE INDEX IF NOT EXISTS idx_meta_kv_kv ON meta_kv(k,v);
+                 CREATE TABLE IF NOT EXISTS queries(
+                   query_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   query TEXT NOT NULL,
+                   filter TEXT NOT NULL,
+                   created_at INTEGER NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS query_fact_links(
+                   query_id INTEGER NOT NULL REFERENCES queries(query_id),
+                   fact_id INTEGER NOT NULL REFERENCES records(id),
+                   created_at INTEGER NOT NULL,
+                   PRIMARY KEY(query_id, fact_id)
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_query_fact_links_fact
+                   ON query_fact_links(fact_id, created_at);
+                 CREATE TABLE IF NOT EXISTS pair_relations(
+                   fact_id INTEGER NOT NULL,
+                   related_id INTEGER NOT NULL,
+                   created_ms INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+                   PRIMARY KEY(fact_id, related_id)
+                 );
                  CREATE VIRTUAL TABLE IF NOT EXISTS vecs USING vec0(embedding float[384] distance_metric=cosine);
                  CREATE TABLE IF NOT EXISTS model_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);",
             )
@@ -728,7 +869,7 @@ impl HashStore for SqliteStore {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(io_err)?;
         let record_id: i64 = match tx.execute(
-            "INSERT INTO records(hash,text,metadata) VALUES(?1,?2,?3)",
+            "INSERT INTO records(hash,text,metadata,created_ms) VALUES(?1,?2,?3,(strftime('%s','now')*1000))",
             rusqlite::params![hash, text, canonical],
         ) {
             Ok(_) => tx.last_insert_rowid(),
@@ -762,6 +903,44 @@ impl HashStore for SqliteStore {
                 rusqlite::params![record_id, bytes],
             )
             .map_err(io_err)?;
+            // Task 2.2: explicit pair-relation row carrying the two IDs and a
+            // first-class created_ms timestamp, committed atomically alongside the
+            // owning record write. No implicit/inferred relations — the row is
+            // created in the same transaction as the record, metadata, and vector
+            // linkage rows.
+            let created_ms: i64 = tx
+                .query_row(
+                    "SELECT created_ms FROM records WHERE id=?1",
+                    rusqlite::params![record_id],
+                    |r| r.get(0),
+                )
+                .map_err(io_err)?;
+            tx.execute(
+                "INSERT INTO pair_relations(fact_id, related_id, created_ms) VALUES(?1,?2,?3)",
+                rusqlite::params![record_id, record_id, created_ms],
+            )
+            .map_err(io_err)?;
+            // Task 2.1: the fact-commit transaction also covers the model
+            // linkage rows, so the commit that creates the fact asserts all
+            // five row kinds (record, metadata, vector linkage, model
+            // metadata, pair-relation) atomically. `INSERT OR IGNORE` keeps this
+            // idempotent with the open-time bootstrap; values are pinned, so a
+            // present row is always identical and a rollback removes nothing that
+            // predates the transaction except the fact rows above.
+            for (k, v) in [
+                ("schema_version", "1"),
+                ("model", INGEST_MODEL),
+                ("revision", INGEST_MODEL_REVISION),
+                ("dimension", "384"),
+                ("metric", "cosine"),
+                ("normalized", "1"),
+            ] {
+                tx.execute(
+                    "INSERT OR IGNORE INTO model_meta(key,value) VALUES(?1,?2)",
+                    rusqlite::params![k, v],
+                )
+                .map_err(io_err)?;
+            }
             Ok(())
         })();
         if let Err(e) = step {
@@ -777,6 +956,20 @@ impl HashStore for SqliteStore {
 mod tests {
     use super::*;
     use crate::ingest::INGEST_DIMENSION;
+
+    #[test]
+    fn production_ingest_and_storage_have_no_worker_queue_or_spawn_path() {
+        for source in [include_str!("ingest.rs"), include_str!("vec_store.rs")] {
+            let production = source
+                .split("#[cfg(test)]")
+                .next()
+                .expect("production source precedes test module")
+                .to_ascii_lowercase();
+            assert!(!production.contains("worker"));
+            assert!(!production.contains("queue"));
+            assert!(!production.contains("spawn"));
+        }
+    }
 
     fn tmp_root() -> PathBuf {
         // Process-local counter disambiguates parallel tests sharing a
@@ -913,6 +1106,135 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Task 2.1: one fact commit covers all four row kinds atomically.
+    ///
+    /// A single `insert` yields exactly one `records` row, one `meta_kv`
+    /// row per metadata key, one `vecs` row linked by explicit rowid, and
+    /// the six pinned `model_meta` rows (asserted in-tx by the writer, so
+    /// the commit that creates the fact covers the model linkage too).
+    #[test]
+    fn insert_commits_all_four_row_kinds_atomically() {
+        let root = tmp_root();
+        let mut store = SqliteStore::open(&root).unwrap();
+        let emb = vec![0.5f32; INGEST_DIMENSION as usize];
+        let id = store
+            .insert("four-kinds", "hello", r#"{"a":"1","b":"2"}"#, &emb)
+            .unwrap();
+        assert_eq!(
+            count(&store.conn, "SELECT count(*) FROM records"),
+            1,
+            "one record row"
+        );
+        assert_eq!(
+            count(&store.conn, "SELECT count(*) FROM meta_kv"),
+            2,
+            "one metadata row per key"
+        );
+        assert_eq!(
+            count(&store.conn, "SELECT count(*) FROM vecs"),
+            1,
+            "one vector linkage row"
+        );
+        assert_eq!(
+            count(&store.conn, "SELECT count(*) FROM model_meta"),
+            6,
+            "six pinned model linkage rows"
+        );
+        // The linkage is explicit: the vector rowid IS the record id.
+        let nvec: i64 = store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM vecs WHERE rowid=?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(nvec, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 2.2: the explicit pair linkage is inspectable with no hidden
+    /// relations.
+    ///
+    /// Per the governing spec the linkage rows ARE the fact's associations:
+    /// `meta_kv` rows keyed by explicit `record_id`, the `vecs` row sharing
+    /// the record id as its rowid, and a first-class `created_ms` on the
+    /// owning record. This test pins that contract: rowid identity, one
+    /// side-table row per key, a present timestamp, and no linkage or
+    /// relation table beyond the known schema (plus sqlite-vec shadows and
+    /// SQLite internals). Anything else would be an inferred relation.
+    #[test]
+    fn pair_linkage_is_explicit_rowid_plus_timestamp_with_no_hidden_tables() {
+        let root = tmp_root();
+        let mut store = SqliteStore::open(&root).unwrap();
+        let emb = vec![0.5f32; INGEST_DIMENSION as usize];
+        let id = store
+            .insert("pair-1", "hello", r#"{"a":"1","b":"2"}"#, &emb)
+            .unwrap();
+        // Vector linkage: rowid identical to the owning record id.
+        let linked: Option<i64> = store
+            .conn
+            .query_row(
+                "SELECT rowid FROM vecs WHERE rowid=?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .ok();
+        assert_eq!(linked, Some(id));
+        // Metadata linkage: explicit record_id rows, one per key.
+        let keys: Vec<String> = {
+            let mut stmt = store
+                .conn
+                .prepare("SELECT k FROM meta_kv WHERE record_id=?1 ORDER BY k")
+                .unwrap();
+            stmt.query_map(rusqlite::params![id], |r| r.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        assert_eq!(keys, vec!["a".to_string(), "b".to_string()]);
+        // First-class timestamp on the owning record.
+        let created_ms: i64 = store
+            .conn
+            .query_row(
+                "SELECT created_ms FROM records WHERE id=?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(created_ms > 0, "created_ms must be present");
+        // No hidden relation tables: only the known schema plus sqlite-vec
+        // shadow tables and SQLite internals may exist.
+        let mut stmt = store
+            .conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap();
+        let tables: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        for table in &tables {
+            assert!(
+                matches!(
+                    table.as_str(),
+                    "records"
+                        | "meta_kv"
+                        | "model_meta"
+                        | "queries"
+                        | "query_fact_links"
+                        | "vecs"
+                        | "pair_relations"
+                ) || table.starts_with("vecs_")
+                    || table.starts_with("sqlite_"),
+                "unexpected relation table: {table}"
+            );
+        }
+        drop(stmt);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn read_only_open_missing_storage_creates_nothing() {
         // The read-only lane never creates storage: opening a missing
@@ -921,6 +1243,27 @@ mod tests {
         assert!(SqliteStore::open_read_only(&root).is_err());
         assert!(!root.join(".infraware").exists());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ingest_failure_propagates_and_leaves_zero_partial_rows() {
+        struct FailingEmbedder;
+        impl crate::ingest::Embedder for FailingEmbedder {
+            fn embed(&self, _text: &str) -> Result<Vec<f32>, LibraryError> {
+                Err(LibraryError::Io {
+                    message: "deterministic embedding failure".to_string(),
+                })
+            }
+        }
+
+        let root = tmp_root();
+        let mut store = SqliteStore::open(&root).unwrap();
+        let err = crate::ingest::run_in(&mut store, &FailingEmbedder, "hello", None)
+            .expect_err("embedding failure must reach the caller");
+        assert!(matches!(err, LibraryError::Io { .. }));
+        assert_eq!(table_counts(&store.conn), (0, 0, 0));
+        assert_eq!(count(&store.conn, "SELECT count(*) FROM model_meta"), 6);
+        assert_eq!(store.find_by_hash("never-committed").unwrap(), None);
     }
 
     #[test]
@@ -934,6 +1277,8 @@ mod tests {
         let before_r = count(&store.conn, "SELECT count(*) FROM records");
         let before_m = count(&store.conn, "SELECT count(*) FROM meta_kv");
         let before_v = count(&store.conn, "SELECT count(*) FROM vecs");
+        let before_model = count(&store.conn, "SELECT count(*) FROM model_meta");
+        let before_p = count(&store.conn, "SELECT count(*) FROM pair_relations");
         // Malformed canonical: parses as JSON? "[1,2]" is valid JSON but not an
         // object, so failure happens after the records insert -> must roll back.
         let res = store.insert("badhash", "t2", "[1,2]", &emb);
@@ -941,6 +1286,14 @@ mod tests {
         assert_eq!(count(&store.conn, "SELECT count(*) FROM records"), before_r);
         assert_eq!(count(&store.conn, "SELECT count(*) FROM meta_kv"), before_m);
         assert_eq!(count(&store.conn, "SELECT count(*) FROM vecs"), before_v);
+        assert_eq!(
+            count(&store.conn, "SELECT count(*) FROM model_meta"),
+            before_model
+        );
+        assert_eq!(
+            count(&store.conn, "SELECT count(*) FROM pair_relations"),
+            before_p
+        );
         assert_eq!(store.find_by_hash("badhash").unwrap(), None);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -997,6 +1350,121 @@ mod tests {
     }
 
     #[test]
+    fn committed_ingest_is_visible_and_durable_without_a_worker() {
+        let root = tmp_root();
+        let emb = vec![0.5f32; INGEST_DIMENSION as usize];
+        let id = {
+            let mut writer = SqliteStore::open(&root).unwrap();
+            writer.insert("durable", "hello", "{}", &emb).unwrap()
+        };
+
+        // Dropping the synchronous writer is the worker-free acknowledgement
+        // boundary; a fresh read-only opener must observe the committed row.
+        let reader = SqliteStore::open_read_only(&root).unwrap();
+        assert_eq!(reader.find_by_hash("durable").unwrap(), Some(id));
+        assert_eq!(count(&reader.conn, "SELECT count(*) FROM records"), 1);
+        drop(reader);
+
+        let reopened = SqliteStore::open_read_only(&root).unwrap();
+        assert_eq!(reopened.find_by_hash("durable").unwrap(), Some(id));
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persisted_query_and_link_survive_reopen() {
+        let root = tmp_root();
+        let emb = vec![0.5f32; INGEST_DIMENSION as usize];
+        let fact_id = {
+            let mut writer = SqliteStore::open(&root).unwrap();
+            writer
+                .insert("query-fact", "hello", r#"{"kind":"fact"}"#, &emb)
+                .unwrap()
+        };
+        let created_at = 1_725_000_123_456;
+        let link = {
+            let mut writer = SqliteStore::open_existing_rw(&root).unwrap();
+            writer
+                .persist_query("hello", r#"{"kind":"fact"}"#, fact_id, created_at)
+                .unwrap()
+        };
+        assert_eq!(
+            link,
+            crate::query::Link {
+                fact_id,
+                query_id: 1,
+                created_at,
+            }
+        );
+
+        let reader = SqliteStore::open_read_only(&root).unwrap();
+        let query: (i64, String, String, i64) = reader
+            .conn
+            .query_row(
+                "SELECT query_id, query, filter, created_at FROM queries",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            query,
+            (
+                1,
+                "hello".to_string(),
+                r#"{"kind":"fact"}"#.to_string(),
+                created_at
+            )
+        );
+        let persisted_link: (i64, i64, i64) = reader
+            .conn
+            .query_row(
+                "SELECT query_id, fact_id, created_at FROM query_fact_links",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(persisted_link, (1, fact_id, created_at));
+        drop(reader);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn query_and_link_persistence_rolls_back_as_one_transaction() {
+        let root = tmp_root();
+        let emb = vec![0.5f32; INGEST_DIMENSION as usize];
+        let fact_id = {
+            let mut writer = SqliteStore::open(&root).unwrap();
+            writer
+                .insert("query-rollback", "hello", "{}", &emb)
+                .unwrap()
+        };
+        {
+            let mut writer = SqliteStore::open_existing_rw(&root).unwrap();
+            writer
+                .conn
+                .execute_batch(
+                    "CREATE TRIGGER abort_query_link BEFORE INSERT ON query_fact_links
+                     BEGIN SELECT RAISE(ABORT, 'link write failed'); END;",
+                )
+                .unwrap();
+            assert!(writer.persist_query("hello", "{}", fact_id, 42).is_err());
+            assert_eq!(count(&writer.conn, "SELECT count(*) FROM queries"), 0);
+            assert_eq!(
+                count(&writer.conn, "SELECT count(*) FROM query_fact_links"),
+                0
+            );
+        }
+        let reopened = SqliteStore::open_read_only(&root).unwrap();
+        assert_eq!(count(&reopened.conn, "SELECT count(*) FROM queries"), 0);
+        assert_eq!(
+            count(&reopened.conn, "SELECT count(*) FROM query_fact_links"),
+            0
+        );
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn read_only_snapshot_sees_wal_with_live_writer() {
         // Committed-but-uncheckpointed WAL rows must survive the file copy.
         let root = tmp_root();
@@ -1013,6 +1481,37 @@ mod tests {
         assert_eq!(n, 1);
         drop(ro);
         drop(w);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn concurrent_read_only_snapshots_do_not_mutate_index() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let root = tmp_root();
+        let emb = vec![0.5f32; INGEST_DIMENSION as usize];
+        let mut writer = SqliteStore::open(&root).unwrap();
+        let first = writer.insert("concurrent-1", "one", "{}", &emb).unwrap();
+        let shared_root = Arc::new(root.clone());
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let root = Arc::clone(&shared_root);
+                thread::spawn(move || {
+                    let snapshot = SqliteStore::open_read_only(&root).unwrap();
+                    assert_eq!(snapshot.find_by_hash("concurrent-1").unwrap(), Some(first));
+                    snapshot.list_records().unwrap().len()
+                })
+            })
+            .collect();
+        let second = writer.insert("concurrent-2", "two", "{}", &emb).unwrap();
+        for reader in readers {
+            let count = reader.join().unwrap();
+            assert!((1..=2).contains(&count));
+        }
+        assert_eq!(count(&writer.conn, "SELECT count(*) FROM records"), 2);
+        assert_eq!(writer.find_by_hash("concurrent-2").unwrap(), Some(second));
+        drop(writer);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1267,6 +1766,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&missing);
     }
 
+    /// Task 2.6: the mutation lane fails closed on an incompatible index.
+    ///
+    /// `open_existing_rw` verifies schema plus all six `model_meta` values
+    /// with SELECTs only, so rejection mutates nothing and creates nothing:
+    /// the pre-open artifact fingerprint must be byte-identical afterwards.
+    /// Callers (`patch`/`remove`) map this to the generic operational error
+    /// (status 1), never record-not-found and never usage.
+    #[test]
+    fn open_existing_rw_rejects_incompatible_without_mutation() {
+        let root = tmp_root();
+        {
+            let mut w = SqliteStore::open(&root).unwrap();
+            let emb = vec![0.5f32; INGEST_DIMENSION as usize];
+            w.insert("rw1", "hello", r#"{"a":"1"}"#, &emb).unwrap();
+            w.conn
+                .execute(
+                    "UPDATE model_meta SET value='768' WHERE key='dimension'",
+                    [],
+                )
+                .unwrap();
+        }
+        let before = artifact_fingerprint(&root);
+        assert!(before[0].1.is_some(), "main DB must exist before open");
+        assert!(SqliteStore::open_existing_rw(&root).is_err());
+        assert_eq!(
+            artifact_fingerprint(&root),
+            before,
+            "incompatible RW open must not mutate the index"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn compat_rejects_missing_model_meta_row() {
         let (root, ro) = tampered_read_only(&["DELETE FROM model_meta WHERE key='revision'"]);
@@ -1334,7 +1865,7 @@ mod tests {
         store.remove_record(a).unwrap();
         assert_eq!(table_counts(&store.conn), (1, 1, 1));
         // The survivor is fully linked; the removed id reads back nothing.
-        assert!(store.find_by_hash("rm-b").unwrap() == Some(b));
+        assert_eq!(store.find_by_hash("rm-b").unwrap(), Some(b));
         assert!(store.find_by_hash("rm-a").unwrap().is_none());
         assert!(store.read_for_patch(b).is_ok());
         // Repeat removal is the distinct record-not-found error.
@@ -1535,6 +2066,83 @@ mod tests {
         ));
         assert_eq!(table_counts(&store.conn), before);
         drop(store);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 2.6: ingest-only lazy migration of the known legacy shape.
+    ///
+    /// A pre-existing index whose `records` table lacks `created_ms` is
+    /// migrated by the ingest opener (column added, NULLs backfilled) and
+    /// then gates as compatible; the read-only and RW-existing lanes never
+    /// migrate and reject the same fixture as incompatible.
+    fn legacy_root_missing_created_ms() -> PathBuf {
+        use crate::ingest::{INGEST_MODEL, INGEST_MODEL_REVISION};
+        let root = tmp_root();
+        std::fs::create_dir_all(root.join(".infraware")).unwrap();
+        crate::vec_shim::ensure_registered();
+        let conn = rusqlite::Connection::open(vec_path(&root)).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE records(id INTEGER PRIMARY KEY AUTOINCREMENT,hash TEXT NOT NULL UNIQUE,text TEXT NOT NULL,metadata TEXT NOT NULL);
+             CREATE TABLE meta_kv(record_id INTEGER NOT NULL REFERENCES records(id),k TEXT NOT NULL,v TEXT NOT NULL,PRIMARY KEY(record_id,k));
+             CREATE INDEX idx_meta_kv_kv ON meta_kv(k,v);
+             CREATE VIRTUAL TABLE vecs USING vec0(embedding float[384] distance_metric=cosine);
+             CREATE TABLE model_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);",
+        )
+        .unwrap();
+        for (k, v) in [
+            ("schema_version", "1"),
+            ("model", INGEST_MODEL),
+            ("revision", INGEST_MODEL_REVISION),
+            ("dimension", "384"),
+            ("metric", "cosine"),
+            ("normalized", "1"),
+        ] {
+            conn.execute(
+                "INSERT INTO model_meta(key,value) VALUES(?1,?2)",
+                rusqlite::params![k, v],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO records(hash,text,metadata) VALUES('legacy-h','hi','{}')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        root
+    }
+
+    #[test]
+    fn ingest_lane_migrates_legacy_missing_created_ms() {
+        let root = legacy_root_missing_created_ms();
+        let store = SqliteStore::open(&root).unwrap();
+        assert!(store.verify_query_compatible().is_ok());
+        let created: i64 = store
+            .conn
+            .query_row(
+                "SELECT created_ms FROM records WHERE hash='legacy-h'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(created > 0, "backfilled created_ms must be present");
+        drop(store);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_and_rw_lanes_reject_legacy_without_migrating() {
+        let root = legacy_root_missing_created_ms();
+        let before = artifact_fingerprint(&root);
+        let ro = SqliteStore::open_read_only(&root).unwrap();
+        assert!(ro.verify_query_compatible().is_err());
+        drop(ro);
+        assert!(SqliteStore::open_existing_rw(&root).is_err());
+        assert_eq!(
+            artifact_fingerprint(&root),
+            before,
+            "non-ingest lanes must not migrate or repair"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
