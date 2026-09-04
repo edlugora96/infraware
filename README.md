@@ -58,9 +58,11 @@ If your npm version does not support `npx github:` URLs, use the global install 
 
 No internal updater. To update: `npm install -g github:edlugora96/infraware#<new-tag>`
 
-### CLI (SQLite RAG verbs only)
+### CLI (SQLite semantic-search verbs only)
 
 Six verbs: `ingest`, `query`, `list`, `get`, `patch`, `remove` against `<project>/.infraware/vec-index.sqlite`.
+
+- Failed SQLite writes roll back. Only `ingest` upgrades the schema. Rollback is unsupported; restore an external database backup.
 
 - `ingest` lazily creates the index; `query`/`list`/`get` are read-only and never create, migrate, or repair.
 - `list` defaults: limit 50, max 500, offset 0, ascending id, snapshot-consistent `total`; records carry exactly `id`, `text`, `metadata`, `created_at`.

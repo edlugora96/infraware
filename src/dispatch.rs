@@ -61,7 +61,7 @@ pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, Library
             metadata_raw,
         } => crate::patch::run(root, &id, text.as_deref(), metadata_raw.as_deref()),
         Command::Remove { id } => {
-            // RAG `remove` (parent + child specs): hard delete by positive
+            // semantic search `remove` (parent + child specs): hard delete by positive
             // integer record id across records/meta_kv/vecs. ID shape,
             // storage, and record-not-found rules live in `remove::run`.
             crate::remove::run(root, &id)
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn remove_non_integer_id_is_usage_without_touching_storage() {
-        // RAG `remove` requires a positive integer id: a non-integer id is
+        // semantic search `remove` requires a positive integer id: a non-integer id is
         // a usage error (status 2) and performs no storage work, even on a
         // fresh root with no index and no legacy store.
         let root = temp_root();

@@ -1,4 +1,4 @@
-//! RAG `remove` execution seam.
+//! semantic search `remove` execution seam.
 //!
 //! Grammar: `remove <positive-integer-id>`. The ID is validated to a
 //! positive integer before any storage work (zero, negative, non-integer,
@@ -28,7 +28,7 @@ fn operational_err() -> LibraryError {
     }
 }
 
-/// Parse a public RAG record ID: strictly ASCII digits, value >= 1, fits `i64`.
+/// Parse a public semantic search record ID: strictly ASCII digits, value >= 1, fits `i64`.
 ///
 /// Leading zeros are accepted (`"007"` is record 7). Empty, non-digit,
 /// zero, negative, and overflowing inputs are usage errors.

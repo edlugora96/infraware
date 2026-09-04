@@ -50,7 +50,7 @@ pub enum Command {
         /// Target record id (validated to a positive integer at execution).
         id: String,
     },
-    /// `patch <ID> [--text <TEXT>] [--metadata <JSON>]` — RAG record update.
+    /// `patch <ID> [--text <TEXT>] [--metadata <JSON>]` — semantic search record update.
     Patch {
         /// Target record id (validated to a positive integer at execution).
         id: String,
@@ -59,7 +59,7 @@ pub enum Command {
         /// Raw replacement metadata JSON when `--metadata` was supplied.
         metadata_raw: Option<String>,
     },
-    /// `remove <ID>` — RAG hard delete by positive integer record id.
+    /// `remove <ID>` — semantic search hard delete by positive integer record id.
     Remove {
         /// Target record id (validated to a positive integer at execution).
         id: String,

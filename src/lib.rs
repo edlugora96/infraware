@@ -1,4 +1,4 @@
-//! `infraware` — caller-agnostic CLI foundation for the six SQLite-backed RAG verbs.
+//! `infraware` — caller-agnostic CLI foundation for the six SQLite-backed semantic search verbs.
 //!
 //! This crate establishes the single-package Rust boundary for `ingest`,
 //! `query`, `list`, `get`, `patch`, and `remove` against the SQLite vector

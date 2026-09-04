@@ -1,4 +1,4 @@
-//! Centralized ID validation for RAG metadata keys.
+//! Centralized ID validation for semantic search metadata keys.
 //!
 //! This is the *only* place key validation lives (design D3). No other module
 //! may duplicate this rule; they must call [`validate_id`]. The rule is

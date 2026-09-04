@@ -1,4 +1,9 @@
-//! Ingest write-path seam (production-compatible, dispatch unwired).
+//! Atomic ingest write path. This is the only fact creator.
+//!
+//! One call ingests exactly one fact/query pair, with one `<TEXT>` and an
+//! optional `[<METADATA-JSON>]`, in a single SQLite transaction. The whole
+//! operation fails if any step fails. The exact-argument parser rejects batch
+//! and legacy verb/flag forms before they reach this seam.
 
 use crate::dispatch::DispatchOutput;
 use crate::error::LibraryError;
@@ -12,6 +17,7 @@ pub const INGEST_MODEL_REVISION: &str = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267
 pub const INGEST_DIMENSION: u32 = 384;
 
 #[allow(dead_code, unreachable_pub)]
+#[derive(Debug)]
 pub struct IngestOutput {
     pub id: i64,
     pub duplicate: bool,

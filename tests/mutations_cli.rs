@@ -1,4 +1,4 @@
-//! CLI-level coverage for RAG `remove` and `patch` (tasks 6.2-6.4).
+//! CLI-level coverage for semantic search `remove` and `patch` (tasks 6.2-6.4).
 //!
 //! Invokes the real `run` path (parse → dispatch → streams/status) under the
 //! repository's `TempCwd` + `CWD_LOCK` discipline. Success paths that need a
