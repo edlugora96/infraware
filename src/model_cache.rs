@@ -477,8 +477,18 @@ mod tests {
             .join(MODEL_SUBDIR)
             .join(REVISION);
         assert!(!dir.exists());
-        let err = ensure_in(&dir, |_: &str| Err(io_err("boom"))).unwrap_err();
+        let calls = std::cell::Cell::new(0);
+        let err = ensure_in(&dir, |_: &str| {
+            calls.set(calls.get() + 1);
+            Err(io_err("boom"))
+        })
+        .unwrap_err();
         assert!(matches!(err, LibraryError::Io { .. }));
+        assert_eq!(
+            calls.get(),
+            1,
+            "a failed ingest recovery makes one fetch attempt"
+        );
         assert!(!dir.exists());
         let parent = dir.parent().unwrap();
         let leftovers: Vec<_> = fs::read_dir(parent)

@@ -1,4 +1,4 @@
-//! RAG `patch` execution seam.
+//! semantic search `patch` execution seam.
 //!
 //! Grammar: `patch <positive-integer-id> [--text <text>] [--metadata <json>]`.
 //! At least one of `--text`/`--metadata` is required (absent payload is a
@@ -258,7 +258,7 @@ pub(crate) fn run(
         Err(_) => return Err(operational_err()),
     };
     let outcome = execute_patch(&mut store, &validated, |t| {
-        let paths = crate::model_cache::ensure_model_files().map_err(|_| operational_err())?;
+        let paths = crate::model_cache::cached_model_files().map_err(|_| operational_err())?;
         let embedder = crate::embed::BgeEmbedder::load(&paths).map_err(|_| operational_err())?;
         use crate::ingest::Embedder;
         match embedder.embed(t) {
@@ -533,6 +533,29 @@ mod tests {
         .unwrap_err();
         assert!(!err.is_usage());
         assert_eq!(err, operational_err());
+    }
+
+    #[test]
+    fn production_patch_model_access_is_cached_only() {
+        let source = include_str!("patch.rs");
+        let production = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("production patch source");
+
+        assert!(production.contains("cached_model_files"));
+        for banned in [
+            "ensure_model_files",
+            "ensure_with",
+            "ureq",
+            "fetch(",
+            "download",
+        ] {
+            assert!(
+                !production.contains(banned),
+                "patch production path must not contain {banned:?}"
+            );
+        }
     }
 
     #[test]
