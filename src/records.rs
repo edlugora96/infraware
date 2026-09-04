@@ -342,4 +342,44 @@ mod tests {
         assert_eq!(v["records"][0]["id"], id);
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn get_preserves_canonical_metadata_bytes_exact() {
+        // Task 1.4: reordered/whitespace input canonicalizes once at the
+        // ingest boundary; the stored canonical bytes must survive the
+        // write/read round trip verbatim. Assert on the raw body substring
+        // (not parsed JSON) so key order and compact form are covered.
+        use crate::ingest::{Embedder, HashStore, INGEST_DIMENSION};
+        struct ZeroEmbed;
+        impl Embedder for ZeroEmbed {
+            fn embed(&self, _text: &str) -> Result<Vec<f32>, LibraryError> {
+                Ok(vec![0.0; INGEST_DIMENSION as usize])
+            }
+        }
+        let root = std::env::temp_dir().join(format!(
+            "infraware-records-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut store = crate::vec_store::SqliteStore::open(&root).unwrap();
+        let canonical =
+            crate::metadata::canonicalize_metadata(Some(r#"{ "b" : "2" , "a" : "1" }"#)).unwrap();
+        assert_eq!(canonical, r#"{"a":"1","b":"2"}"#);
+        let hash = crate::metadata::compute_identity(&canonical, "hello");
+        let embedding = ZeroEmbed.embed("hello").unwrap();
+        let id = store
+            .insert(&hash, "hello", &canonical, &embedding)
+            .unwrap();
+        drop(store);
+        let out = get(&root, &id.to_string()).expect("get succeeds");
+        assert!(
+            out.body.contains(r#""metadata":{"a":"1","b":"2"}"#),
+            "canonical bytes must survive verbatim: {}",
+            out.body
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
