@@ -35,6 +35,7 @@ mod model_cache;
 mod parser;
 mod persistence;
 mod projection;
+mod query;
 mod vec_shim;
 mod vec_store;
 

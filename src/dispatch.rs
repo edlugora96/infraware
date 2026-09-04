@@ -98,6 +98,11 @@ pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, Library
             Ok(DispatchOutput { format, body })
         }
         Command::Ingest { text, metadata_raw } => ingest::run(root, &text, metadata_raw.as_deref()),
+        // Task 2.3: `query` execution seam. The arm only routes the owned
+        // parser payload to `query::run`; behavior stays deferred to tasks
+        // 3.x-6.x. The stub returns a non-usage operational error, so `run`
+        // maps it to status 1 with empty stdout (never usage status 2).
+        Command::Query { text, filter } => crate::query::run(root, &text, &filter),
     }
 }
 
@@ -302,5 +307,54 @@ mod tests {
         .unwrap_err();
         assert!(err.is_usage());
         assert!(matches!(err, LibraryError::InvalidInput { .. }));
+    }
+
+    // ---- task 2.3: `query` dispatch arm ----
+
+    #[test]
+    fn query_dispatch_routes_to_query_seam_as_operational() {
+        // The arm preserves the owned parser payload and delegates to the
+        // query seam; the storage gate reports a generic non-usage
+        // operational error so `run` maps it to status 1 with empty stdout.
+        use std::collections::BTreeMap;
+        let root = temp_root();
+        let filter: BTreeMap<String, String> =
+            [("a".to_string(), "1".to_string())].into_iter().collect();
+        let err = dispatch(
+            Command::Query {
+                text: "  hello world  ".to_string(),
+                filter,
+            },
+            &root.0,
+        )
+        .unwrap_err();
+        assert!(!err.is_usage());
+        assert_eq!(
+            err,
+            LibraryError::Io {
+                message: crate::query::QUERY_OPERATIONAL_MESSAGE.to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn query_dispatch_leaves_existing_commands_unchanged() {
+        // Regression: wiring the `query` arm must not alter any existing
+        // command behavior or the stream/status ownership in `run`.
+        let root = temp_root();
+        let out = dispatch(Command::Init, &root.0).expect("init succeeds");
+        assert!(out.body.is_empty());
+        assert_eq!(
+            dispatch(
+                Command::Get {
+                    id: "abc".to_string(),
+                    format: OutputFormat::Markdown,
+                },
+                &root.0,
+            ),
+            Err(LibraryError::MissingDefinition {
+                id: "abc".to_string()
+            })
+        );
     }
 }
