@@ -116,29 +116,39 @@ impl Embedder for BgeEmbedder {
             .map_err(|e| io_err(format!("tensor: {e}")))?
             .to_vec1()
             .map_err(|e| io_err(format!("tensor: {e}")))?;
-        if flat.len() != INGEST_DIMENSION as usize {
-            return Err(io_err(format!(
-                "unexpected embedding dimension {}",
-                flat.len()
-            )));
-        }
-        for v in &flat {
-            if !v.is_finite() {
-                return Err(io_err("non-finite embedding value"));
-            }
-        }
-        let norm: f32 = flat.iter().map(|v| v * v).sum::<f32>().sqrt();
-        if !norm.is_finite() || norm <= 0.0 {
-            return Err(io_err("invalid embedding norm"));
-        }
-        let out: Vec<f32> = flat.iter().map(|v| v / norm).collect();
-        for v in &out {
-            if !v.is_finite() {
-                return Err(io_err("non-finite normalized value"));
-            }
-        }
-        Ok(out)
+        normalize_embedding(flat)
     }
+}
+
+/// Validate and L2-normalize one raw pooled embedding (task 3.6).
+///
+/// Accepts exactly `INGEST_DIMENSION` finite values with a finite positive
+/// norm and returns the unit-norm vector. Pure: no model, filesystem, or
+/// network access, so dimension and norm checks stay unit-testable without
+/// the pinned model cache.
+pub(crate) fn normalize_embedding(flat: Vec<f32>) -> Result<Vec<f32>, LibraryError> {
+    if flat.len() != INGEST_DIMENSION as usize {
+        return Err(io_err(format!(
+            "unexpected embedding dimension {}",
+            flat.len()
+        )));
+    }
+    for v in &flat {
+        if !v.is_finite() {
+            return Err(io_err("non-finite embedding value"));
+        }
+    }
+    let norm: f32 = flat.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if !norm.is_finite() || norm <= 0.0 {
+        return Err(io_err("invalid embedding norm"));
+    }
+    let out: Vec<f32> = flat.iter().map(|v| v / norm).collect();
+    for v in &out {
+        if !v.is_finite() {
+            return Err(io_err("non-finite normalized value"));
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -161,6 +171,41 @@ mod tests {
     #[test]
     fn token_len_0_accepted() {
         assert!(check_token_len(0).is_ok());
+    }
+
+    /// Task 3.6: 384-d input normalizes to unit norm.
+    #[test]
+    fn normalize_accepts_384d_with_unit_norm() {
+        let flat = vec![0.5f32; INGEST_DIMENSION as usize];
+        let out = normalize_embedding(flat).unwrap();
+        assert_eq!(out.len(), INGEST_DIMENSION as usize);
+        let norm: f32 = out.iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-5, "norm was {norm}");
+    }
+
+    /// Task 3.6: wrong dimensions rejected.
+    #[test]
+    fn normalize_rejects_wrong_dimension() {
+        assert!(normalize_embedding(vec![0.1f32; 3]).is_err());
+        assert!(normalize_embedding(vec![0.1f32; INGEST_DIMENSION as usize + 1]).is_err());
+    }
+
+    /// Task 3.6: non-finite values rejected.
+    #[test]
+    fn normalize_rejects_non_finite() {
+        let mut flat = vec![0.5f32; INGEST_DIMENSION as usize];
+        flat[0] = f32::NAN;
+        assert!(normalize_embedding(flat).is_err());
+        let mut flat = vec![0.5f32; INGEST_DIMENSION as usize];
+        flat[1] = f32::INFINITY;
+        assert!(normalize_embedding(flat).is_err());
+    }
+
+    /// Task 3.6: zero norm rejected (no division into non-finite output).
+    #[test]
+    fn normalize_rejects_zero_norm() {
+        let flat = vec![0.0f32; INGEST_DIMENSION as usize];
+        assert!(normalize_embedding(flat).is_err());
     }
 
     #[test]

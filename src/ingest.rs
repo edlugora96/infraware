@@ -78,6 +78,18 @@ pub fn run_in<S: HashStore, E: Embedder>(
     })
 }
 
+/// Generic operational failure for the ingest model stages (task 5.2).
+///
+/// Detail-free like the query gate: cache/model paths, download details,
+/// and vectors never reach diagnostics. Validation errors keep their
+/// specific messages; only download/load/embed map here. Non-usage, so
+/// the adapter reports status 1 with empty stdout.
+fn operational_err() -> LibraryError {
+    LibraryError::Io {
+        message: "ingest failed".to_string(),
+    }
+}
+
 /// Production ingest: validate -> canonicalize -> hash -> open store ->
 /// duplicate lookup; on miss ensure model, embed (outside transaction),
 /// then exactly one insert. Emits compact 5-key JSON.
@@ -101,9 +113,9 @@ pub(crate) fn run(
             body: output_json(&out),
         });
     }
-    let paths = crate::model_cache::ensure_model_files()?;
-    let embedder = crate::embed::BgeEmbedder::load(&paths)?;
-    let embedding = embedder.embed(text)?;
+    let paths = crate::model_cache::ensure_model_files().map_err(|_| operational_err())?;
+    let embedder = crate::embed::BgeEmbedder::load(&paths).map_err(|_| operational_err())?;
+    let embedding = embedder.embed(text).map_err(|_| operational_err())?;
     let id = store.insert(&hash, text, &canonical, &embedding)?;
     let out = IngestOutput {
         id,
@@ -274,5 +286,73 @@ mod tests {
         assert_eq!(s.lookups.get(), 0);
         assert_eq!(e.calls.get(), 0);
         assert_eq!(s.inserts, 0);
+    }
+
+    /// Task 3.4 ordering: duplicate lookup precedes all model work,
+    /// embedding completes before insert/transaction, and the duplicate
+    /// path emits no model/embed/insert events. The shared event log
+    /// stands in for every model stage (cache/load/embed), which the
+    /// injected embedder represents on this seam.
+    #[test]
+    fn ordering_lookup_before_embed_before_insert_with_no_model_work_on_duplicate() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        struct LogStore {
+            map: HashMap<String, i64>,
+            next: i64,
+            log: Rc<RefCell<Vec<&'static str>>>,
+        }
+        impl HashStore for LogStore {
+            fn find_by_hash(&self, hash: &str) -> Result<Option<i64>, LibraryError> {
+                self.log.borrow_mut().push("lookup");
+                Ok(self.map.get(hash).copied())
+            }
+            fn insert(
+                &mut self,
+                hash: &str,
+                _text: &str,
+                _canonical: &str,
+                embedding: &[f32],
+            ) -> Result<i64, LibraryError> {
+                self.log.borrow_mut().push("insert");
+                // Insert receives a fully computed embedding, so the
+                // embed event must already be logged (outside transaction).
+                assert_eq!(embedding.len(), INGEST_DIMENSION as usize);
+                let id = self.next;
+                self.next += 1;
+                self.map.insert(hash.to_string(), id);
+                Ok(id)
+            }
+        }
+        struct LogEmbedder {
+            log: Rc<RefCell<Vec<&'static str>>>,
+        }
+        impl Embedder for LogEmbedder {
+            fn embed(&self, _text: &str) -> Result<Vec<f32>, LibraryError> {
+                self.log.borrow_mut().push("embed");
+                Ok(vec![0.0; INGEST_DIMENSION as usize])
+            }
+        }
+
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut store = LogStore {
+            map: HashMap::new(),
+            next: 1,
+            log: Rc::clone(&log),
+        };
+        let embedder = LogEmbedder {
+            log: Rc::clone(&log),
+        };
+        // Fresh insert: lookup, then embed, then insert.
+        let first = run_in(&mut store, &embedder, "hello", None).unwrap();
+        assert!(!first.duplicate);
+        assert_eq!(*log.borrow(), vec!["lookup", "embed", "insert"]);
+        // Duplicate: lookup only — no model/embed/insert events.
+        log.borrow_mut().clear();
+        let second = run_in(&mut store, &embedder, "hello", None).unwrap();
+        assert!(second.duplicate);
+        assert_eq!(second.id, first.id);
+        assert_eq!(*log.borrow(), vec!["lookup"]);
     }
 }

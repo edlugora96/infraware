@@ -273,7 +273,7 @@ pub(crate) fn ensure_model_files() -> Result<ModelPaths, LibraryError> {
 /// directories: it resolves the cache dir and runs read-only validation.
 /// Ingest keeps using [`ensure_model_files`]; this function is query-only.
 /// Exposing this is safe: [`validate_final`] performs read-only size/hash
-/// and manifest checks with no `unsafe`, no writes, and no I/O outside the
+/// and manifest checks with no FFI, no writes, and no I/O outside the
 /// cache directory reads.
 #[allow(dead_code)] // wired by task 5.2; 5.1 adds the accessor + tests only.
 pub(crate) fn cached_model_files() -> Result<ModelPaths, LibraryError> {
