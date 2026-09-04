@@ -31,6 +31,7 @@ pub fn parse_args(argv: &[String]) -> Result<Command, LibraryError> {
         "insert" => parse_insert(&mut iter),
         "edit" => parse_edit(&mut iter),
         "remove" => parse_remove(&mut iter),
+        "patch" => parse_patch(&mut iter),
         "list" => parse_list(&mut iter),
         "ingest" => parse_ingest(&mut iter),
         "query" => parse_query(&mut iter),
@@ -355,6 +356,66 @@ where
     })
 }
 
+/// Parse `patch <ID> [--text <TEXT>] [--metadata <JSON>]`.
+///
+/// `<ID>` is required and carried raw (positive-integer validation happens
+/// at execution alongside payload validation). `--text` and `--metadata`
+/// are order-independent and each accepted at most once; at least one must
+/// be present. Unknown flags, duplicate flags, missing flag values, bare
+/// extra positionals, and absent payload are all usage errors. Flag values
+/// are preserved verbatim (no `--`-prefix rejection: text is byte-exact).
+fn parse_patch<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
+where
+    I: Iterator<Item = &'a String>,
+{
+    let id = iter.next().ok_or_else(|| LibraryError::InvalidInput {
+        message: "patch requires an <ID>".to_string(),
+    })?;
+    let mut text: Option<String> = None;
+    let mut metadata_raw: Option<String> = None;
+    while let Some(token) = iter.next() {
+        match token.as_str() {
+            "--text" => {
+                if text.is_some() {
+                    return Err(LibraryError::InvalidInput {
+                        message: "duplicate --text option".to_string(),
+                    });
+                }
+                let value = iter.next().ok_or_else(|| LibraryError::InvalidInput {
+                    message: "--text requires a value".to_string(),
+                })?;
+                text = Some(value.clone());
+            }
+            "--metadata" => {
+                if metadata_raw.is_some() {
+                    return Err(LibraryError::InvalidInput {
+                        message: "duplicate --metadata option".to_string(),
+                    });
+                }
+                let value = iter.next().ok_or_else(|| LibraryError::InvalidInput {
+                    message: "--metadata requires a value".to_string(),
+                })?;
+                metadata_raw = Some(value.clone());
+            }
+            other => {
+                return Err(LibraryError::InvalidInput {
+                    message: format!("unknown option for patch: {other}"),
+                });
+            }
+        }
+    }
+    if text.is_none() && metadata_raw.is_none() {
+        return Err(LibraryError::InvalidInput {
+            message: "patch requires --text or --metadata".to_string(),
+        });
+    }
+    Ok(Command::Patch {
+        id: id.clone(),
+        text,
+        metadata_raw,
+    })
+}
+
 /// Parse `remove <ID>`.
 fn parse_remove<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
 where
@@ -486,6 +547,116 @@ mod tests {
                 id: "abc".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn parse_patch_text_only() {
+        assert_eq!(
+            parse_args(&args(&["patch", "3", "--text", "hello"])),
+            Ok(Command::Patch {
+                id: "3".to_string(),
+                text: Some("hello".to_string()),
+                metadata_raw: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_patch_metadata_only() {
+        assert_eq!(
+            parse_args(&args(&["patch", "3", "--metadata", r#"{"a":"1"}"#])),
+            Ok(Command::Patch {
+                id: "3".to_string(),
+                text: None,
+                metadata_raw: Some(r#"{"a":"1"}"#.to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_patch_both_flags_any_order() {
+        let flags_first = parse_args(&args(&[
+            "patch",
+            "3",
+            "--metadata",
+            "{}",
+            "--text",
+            "hello",
+        ]))
+        .expect("flags-first patch parses");
+        let flags_last = parse_args(&args(&[
+            "patch",
+            "3",
+            "--text",
+            "hello",
+            "--metadata",
+            "{}",
+        ]))
+        .expect("flags-last patch parses");
+        assert_eq!(flags_first, flags_last);
+        assert_eq!(
+            flags_first,
+            Command::Patch {
+                id: "3".to_string(),
+                text: Some("hello".to_string()),
+                metadata_raw: Some("{}".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_patch_preserves_text_bytes() {
+        assert_eq!(
+            parse_args(&args(&["patch", "3", "--text", "  hello world  "])),
+            Ok(Command::Patch {
+                id: "3".to_string(),
+                text: Some("  hello world  ".to_string()),
+                metadata_raw: None,
+            })
+        );
+    }
+
+    #[test]
+    fn reject_patch_missing_id() {
+        assert!(parse_args(&args(&["patch"])).is_err());
+    }
+
+    #[test]
+    fn reject_patch_absent_payload() {
+        assert!(parse_args(&args(&["patch", "3"])).is_err());
+    }
+
+    #[test]
+    fn reject_patch_unknown_flag() {
+        assert!(parse_args(&args(&["patch", "3", "--merge", "x"])).is_err());
+    }
+
+    #[test]
+    fn reject_patch_duplicate_flags() {
+        assert!(parse_args(&args(&["patch", "3", "--text", "a", "--text", "b"])).is_err());
+        assert!(
+            parse_args(&args(&[
+                "patch",
+                "3",
+                "--metadata",
+                "{}",
+                "--metadata",
+                "{}"
+            ]))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn reject_patch_missing_flag_value() {
+        assert!(parse_args(&args(&["patch", "3", "--text"])).is_err());
+        assert!(parse_args(&args(&["patch", "3", "--metadata"])).is_err());
+    }
+
+    #[test]
+    fn reject_patch_extra_positional() {
+        assert!(parse_args(&args(&["patch", "3", "extra", "--text", "x"])).is_err());
+        assert!(parse_args(&args(&["patch", "3", "--text", "x", "extra"])).is_err());
     }
 
     // ---- Rejected shapes ----

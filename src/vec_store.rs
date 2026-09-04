@@ -11,6 +11,11 @@ fn io_err(msg: impl std::fmt::Display) -> LibraryError {
     }
 }
 
+/// Sole owner of the vector-index path (task 2.1).
+///
+/// The index lives at exactly `<root>/.infraware/vec-index.sqlite`. All
+/// storage open paths must resolve through this helper so the location
+/// cannot drift between the ingest (lazy-create) and read-only lanes.
 fn vec_path(root: &Path) -> PathBuf {
     root.join(".infraware").join("vec-index.sqlite")
 }
@@ -409,7 +414,16 @@ impl SqliteStore {
                 rusqlite::params![id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .map_err(io_err)?;
+            .map_err(|e| match e {
+                // Task 5.3: a missing row is the distinct record-not-found
+                // error, not the generic operational error. Query post-rank
+                // reads still map this to the redacted generic error at the
+                // query layer; a direct `get` surfaces it distinctly.
+                rusqlite::Error::QueryReturnedNoRows => {
+                    LibraryError::MissingDefinition { id: id.to_string() }
+                }
+                other => io_err(other),
+            })?;
         let value: serde_json::Value = serde_json::from_str(&canonical).map_err(io_err)?;
         let obj = value
             .as_object()
@@ -420,6 +434,190 @@ impl SqliteStore {
             map.insert(k.clone(), vs.to_string());
         }
         Ok((map, text))
+    }
+
+    /// Read-write opener for mutation commands (remove/patch).
+    ///
+    /// Unlike [`open`](Self::open) this never creates storage: a missing
+    /// index file is an operational error and no directories or files are
+    /// created, migrated, or repaired as a side effect (parent spec:
+    /// remove/patch on missing storage fail; reads and mutations must not
+    /// create or repair state). The extension registration still runs so an
+    /// existing vec0 table resolves on this connection. No DDL runs here.
+    pub(crate) fn open_existing_rw(root: &Path) -> Result<Self, LibraryError> {
+        let path = vec_path(root);
+        if !path.is_file() {
+            return Err(io_err("vec index not found"));
+        }
+        crate::vec_shim::ensure_registered();
+        // The file exists, so this opens read-write without creating.
+        let conn = rusqlite::Connection::open(&path).map_err(io_err)?;
+        Ok(Self {
+            conn,
+            _snapshot: None,
+        })
+    }
+
+    /// Hard-delete one record across `meta_kv`, `vecs`, and `records` atomically.
+    ///
+    /// Uses only Spike-4-probe SQL: `DELETE FROM vecs WHERE rowid = ?1` is
+    /// legal on the pinned stack (evidence item 4, `Ok(1)` observed) and the
+    /// three deletes run in one `Immediate` transaction, so any pre-commit
+    /// failure rolls back with no partial rows (evidence item 6). No VACUUM:
+    /// space reclamation is future maintenance per the parent spec.
+    /// A missing row is the distinct [`LibraryError::MissingDefinition`]
+    /// (record-not-found), never the generic operational error.
+    pub(crate) fn remove_record(&mut self, id: i64) -> Result<(), LibraryError> {
+        let present: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM records WHERE id=?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .ok();
+        if present != Some(id) {
+            return Err(LibraryError::MissingDefinition { id: id.to_string() });
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(io_err)?;
+        let step: Result<(), LibraryError> = (|| {
+            tx.execute(
+                "DELETE FROM meta_kv WHERE record_id=?1",
+                rusqlite::params![id],
+            )
+            .map_err(io_err)?;
+            tx.execute("DELETE FROM vecs WHERE rowid=?1", rusqlite::params![id])
+                .map_err(io_err)?;
+            let removed = tx
+                .execute("DELETE FROM records WHERE id=?1", rusqlite::params![id])
+                .map_err(io_err)?;
+            if removed != 1 {
+                return Err(io_err("remove affected no record row"));
+            }
+            Ok(())
+        })();
+        if let Err(e) = step {
+            drop(tx); // rollback: no partial record/vector/meta state
+            return Err(e);
+        }
+        tx.commit().map_err(io_err)?;
+        Ok(())
+    }
+
+    /// Apply a patch to one record atomically, preserving the public ID.
+    ///
+    /// `text`/`canonical`/`hash` are the effective new values (already
+    /// validated, canonicalized, and hashed by the caller). `embedding` is
+    /// `Some` only for real text changes and is written with the
+    /// evidence-backed delete-plus-insert using the same explicit rowid
+    /// (evidence items 5 and 8: re-insert visibility and rowid round-trip
+    /// observed on the pinned stack), so the replacement vector row keeps
+    /// the record ID. Metadata-only patches (`None`) leave `vecs` untouched.
+    /// The `records` row is updated in place, so AUTOINCREMENT IDs stay
+    /// stable and are never reused. One `Immediate` transaction covers the
+    /// record, metadata, and optional vector writes; any pre-commit failure
+    /// (including a `UNIQUE`-hash collision) rolls back with no partial
+    /// state. A missing row is [`LibraryError::MissingDefinition`].
+    pub(crate) fn apply_patch(
+        &mut self,
+        id: i64,
+        text: &str,
+        canonical: &str,
+        hash: &str,
+        embedding: Option<&[f32]>,
+    ) -> Result<(), LibraryError> {
+        let present: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM records WHERE id=?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .ok();
+        if present != Some(id) {
+            return Err(LibraryError::MissingDefinition { id: id.to_string() });
+        }
+        if let Some(emb) = embedding {
+            if emb.len() != INGEST_DIMENSION as usize {
+                return Err(io_err(format!("invalid embedding length {}", emb.len())));
+            }
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(io_err)?;
+        let step: Result<(), LibraryError> = (|| {
+            let updated = tx
+                .execute(
+                    "UPDATE records SET hash=?1, text=?2, metadata=?3 WHERE id=?4",
+                    rusqlite::params![hash, text, canonical, id],
+                )
+                .map_err(io_err)?;
+            if updated != 1 {
+                return Err(io_err("patch affected no record row"));
+            }
+            tx.execute(
+                "DELETE FROM meta_kv WHERE record_id=?1",
+                rusqlite::params![id],
+            )
+            .map_err(io_err)?;
+            let meta: serde_json::Value = serde_json::from_str(canonical).map_err(io_err)?;
+            let obj = meta
+                .as_object()
+                .ok_or_else(|| io_err("metadata not object"))?;
+            for (k, v) in obj {
+                let vs = v.as_str().ok_or_else(|| io_err("metadata not flat"))?;
+                tx.execute(
+                    "INSERT INTO meta_kv(record_id,k,v) VALUES(?1,?2,?3)",
+                    rusqlite::params![id, k, vs],
+                )
+                .map_err(io_err)?;
+            }
+            if let Some(emb) = embedding {
+                tx.execute("DELETE FROM vecs WHERE rowid=?1", rusqlite::params![id])
+                    .map_err(io_err)?;
+                let mut bytes = Vec::with_capacity(emb.len() * 4);
+                for f in emb.iter() {
+                    bytes.extend_from_slice(&f.to_le_bytes());
+                }
+                tx.execute(
+                    "INSERT INTO vecs(rowid, embedding) VALUES(?1, ?2)",
+                    rusqlite::params![id, bytes],
+                )
+                .map_err(io_err)?;
+            }
+            Ok(())
+        })();
+        if let Err(e) = step {
+            drop(tx); // rollback: no partial record/vector/meta state
+            return Err(e);
+        }
+        tx.commit().map_err(io_err)?;
+        Ok(())
+    }
+
+    /// Read one record's text, canonical metadata, and content hash by row id.
+    ///
+    /// Mutation-path counterpart to [`read_record`](Self::read_record) that
+    /// additionally returns the stored hash so callers can detect identical
+    /// patches and hash collisions without embedding. A missing row is the
+    /// distinct [`LibraryError::MissingDefinition`].
+    pub(crate) fn read_for_patch(&self, id: i64) -> Result<(String, String, String), LibraryError> {
+        self.conn
+            .query_row(
+                "SELECT text, metadata, hash FROM records WHERE id=?1",
+                rusqlite::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    LibraryError::MissingDefinition { id: id.to_string() }
+                }
+                other => io_err(other),
+            })
     }
 
     fn init_schema(&self) -> Result<(), LibraryError> {
@@ -547,13 +745,19 @@ mod tests {
     use crate::ingest::INGEST_DIMENSION;
 
     fn tmp_root() -> PathBuf {
+        // Process-local counter disambiguates parallel tests sharing a
+        // timestamp (wall-clock nanos alone can collide within one process).
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "infraware-vec-{}-{}",
+            "infraware-vec-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            unique
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -622,6 +826,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Task 2.1: the ingest lane lazily creates the index at the exact
+    /// owned path. `ingest::run` is the sole production caller of
+    /// `SqliteStore::open`, so opening through it must materialize exactly
+    /// `<root>/.infraware/vec-index.sqlite` from a fresh root.
+    #[test]
+    fn ingest_lane_open_creates_exact_index_path() {
+        let root = tmp_root();
+        let expected = root.join(".infraware").join("vec-index.sqlite");
+        assert_eq!(vec_path(&root), expected);
+        assert!(!expected.exists());
+        let _store = SqliteStore::open(&root).unwrap();
+        assert!(expected.is_file(), "ingest open must create {expected:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn insert_links_rowid_and_unique_hash() {
         let root = tmp_root();
@@ -687,6 +906,21 @@ mod tests {
         assert_eq!(count(&store.conn, "SELECT count(*) FROM meta_kv"), before_m);
         assert_eq!(count(&store.conn, "SELECT count(*) FROM vecs"), before_v);
         assert_eq!(store.find_by_hash("badhash").unwrap(), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 3.6: storage-side dimension gate. Wrong-length embeddings are
+    /// rejected before any write with no visible rows.
+    #[test]
+    fn insert_rejects_wrong_dimension_with_no_rows() {
+        let root = tmp_root();
+        let mut store = SqliteStore::open(&root).unwrap();
+        for bad in [vec![0.1f32; 3], vec![0.1f32; INGEST_DIMENSION as usize + 1]] {
+            assert!(store.insert("badh", "t", "{}", &bad).is_err());
+        }
+        assert_eq!(count(&store.conn, "SELECT count(*) FROM records"), 0);
+        assert_eq!(count(&store.conn, "SELECT count(*) FROM vecs"), 0);
+        assert_eq!(store.find_by_hash("badh").unwrap(), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1005,6 +1239,266 @@ mod tests {
         assert!(embed_if_compatible(&ro, &mut calls).is_err());
         assert_eq!(calls, 0);
         drop(ro);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- Lane 2 (tasks 6.2-6.4): remove/patch against Spike 4 evidence ----
+    //
+    // Every statement below is evidence-backed only: `DELETE FROM vecs
+    // WHERE rowid = ?` legality (probe item 4), delete+reinsert visibility
+    // of an explicit rowid (item 5), delete-path rollback (item 6), stable
+    // shadow tables at small scale (item 7), and explicit-rowid round-trip
+    // (item 8). No invented DDL, KNN, or chunk API appears here.
+
+    fn seed_two(root: &Path) -> (i64, i64) {
+        let mut w = SqliteStore::open(root).unwrap();
+        let emb = vec![0.5f32; INGEST_DIMENSION as usize];
+        let a = w.insert("rm-a", "alpha", r#"{"g":"1"}"#, &emb).unwrap();
+        let b = w.insert("rm-b", "beta", r#"{"g":"2"}"#, &emb).unwrap();
+        (a, b)
+    }
+
+    fn table_counts(conn: &rusqlite::Connection) -> (i64, i64, i64) {
+        (
+            count(conn, "SELECT count(*) FROM records"),
+            count(conn, "SELECT count(*) FROM meta_kv"),
+            count(conn, "SELECT count(*) FROM vecs"),
+        )
+    }
+
+    /// Shadow-table set for the vec0 index (probe item 7 vocabulary).
+    /// Sorted names of `vecs` plus every `vecs_%` shadow table.
+    fn shadow_set(conn: &rusqlite::Connection) -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE name='vecs' OR name LIKE 'vecs\\_%' ESCAPE '\\' ORDER BY name")
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<String>, _>>()
+            .unwrap()
+    }
+
+    fn embedding_bytes(conn: &rusqlite::Connection, id: i64) -> Vec<u8> {
+        conn.query_row(
+            "SELECT embedding FROM vecs WHERE rowid=?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Task 6.2: remove deletes the record, metadata, and vector rows
+    /// atomically; repeating the removal is record-not-found.
+    #[test]
+    fn remove_deletes_all_three_tables_atomically() {
+        let root = tmp_root();
+        let (a, b) = seed_two(&root);
+        let mut store = SqliteStore::open_existing_rw(&root).unwrap();
+        assert_eq!(table_counts(&store.conn), (2, 2, 2));
+        store.remove_record(a).unwrap();
+        assert_eq!(table_counts(&store.conn), (1, 1, 1));
+        // The survivor is fully linked; the removed id reads back nothing.
+        assert!(store.find_by_hash("rm-b").unwrap() == Some(b));
+        assert!(store.find_by_hash("rm-a").unwrap().is_none());
+        assert!(store.read_for_patch(b).is_ok());
+        // Repeat removal is the distinct record-not-found error.
+        assert!(matches!(
+            store.remove_record(a),
+            Err(LibraryError::MissingDefinition { .. })
+        ));
+        assert_eq!(table_counts(&store.conn), (1, 1, 1));
+        drop(store);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 6.2: the remove statements roll back together (probe item 6).
+    ///
+    /// Mirrors the executed probe: one Immediate transaction performs the
+    /// three production deletes, a forced failing statement errors, and
+    /// rollback restores every row with no partial state.
+    #[test]
+    fn remove_statements_roll_back_together_on_failure() {
+        let root = tmp_root();
+        let (a, _) = seed_two(&root);
+        let mut store = SqliteStore::open_existing_rw(&root).unwrap();
+        let before = table_counts(&store.conn);
+        let tx = store
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        tx.execute(
+            "DELETE FROM meta_kv WHERE record_id=?1",
+            rusqlite::params![a],
+        )
+        .unwrap();
+        tx.execute("DELETE FROM vecs WHERE rowid=?1", rusqlite::params![a])
+            .unwrap();
+        tx.execute("DELETE FROM records WHERE id=?1", rusqlite::params![a])
+            .unwrap();
+        // Forced failure on the same transaction, as in the probe.
+        assert!(
+            tx.execute("DELETE FROM vecs_nonexistent", [])
+                .unwrap_err()
+                .to_string()
+                .contains("no such table")
+        );
+        tx.rollback().unwrap();
+        assert_eq!(table_counts(&store.conn), before);
+        assert!(store.find_by_hash("rm-a").unwrap() == Some(a));
+        assert_eq!(
+            embedding_bytes(&store.conn, a).len(),
+            INGEST_DIMENSION as usize * 4
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 6.2: remove on missing storage creates nothing and fails
+    /// operationally (never record-not-found, never usage).
+    #[test]
+    fn remove_open_missing_storage_creates_nothing() {
+        let missing = tmp_root();
+        assert!(SqliteStore::open_existing_rw(&missing).is_err());
+        assert!(!missing.join(".infraware").exists());
+        assert!(!vec_path(&missing).exists());
+        let _ = std::fs::remove_dir_all(&missing);
+    }
+
+    /// Tasks 6.2/6.4: AUTOINCREMENT IDs are not reused after deletion and
+    /// the shadow-table set stays consistent across remove (probe item 7:
+    /// stable shadows at small scale, no orphan growth observed).
+    #[test]
+    fn remove_preserves_id_uniqueness_and_shadow_state() {
+        let root = tmp_root();
+        let (a, _) = seed_two(&root);
+        let mut store = SqliteStore::open_existing_rw(&root).unwrap();
+        let shadows_before = shadow_set(&store.conn);
+        assert!(shadows_before.contains(&"vecs".to_string()));
+        assert!(shadows_before.iter().any(|n| n.starts_with("vecs_")));
+        store.remove_record(a).unwrap();
+        let emb = vec![0.5f32; INGEST_DIMENSION as usize];
+        let c = store.insert("rm-c", "gamma", r#"{"g":"3"}"#, &emb).unwrap();
+        assert!(c > a, "deleted id {a} must not be reused (got {c})");
+        // Live-row linkage and shadow consistency hold after remove+insert.
+        assert_eq!(table_counts(&store.conn), (2, 2, 2));
+        assert_eq!(shadow_set(&store.conn), shadows_before);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 6.3: metadata-only patch replaces the side-table rows and record
+    /// fields while leaving the stored vector bytes untouched (zero model
+    /// work at the orchestration layer is covered in `patch.rs` tests).
+    #[test]
+    fn patch_metadata_only_preserves_vector_and_rowid() {
+        let root = tmp_root();
+        let (a, b) = seed_two(&root);
+        let mut store = SqliteStore::open_existing_rw(&root).unwrap();
+        let vec_before = embedding_bytes(&store.conn, a);
+        let new_canonical = r#"{"g":"9","h":"x"}"#;
+        let new_hash = crate::metadata::compute_identity(new_canonical, "alpha");
+        store
+            .apply_patch(a, "alpha", new_canonical, &new_hash, None)
+            .unwrap();
+        // Vector bytes and rowid linkage unchanged; metadata replaced wholesale.
+        assert_eq!(embedding_bytes(&store.conn, a), vec_before);
+        assert_eq!(table_counts(&store.conn), (2, 3, 2));
+        let v: String = store
+            .conn
+            .query_row(
+                "SELECT v FROM meta_kv WHERE record_id=?1 AND k='g'",
+                rusqlite::params![a],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(v, "9");
+        let (text, canonical, hash) = store.read_for_patch(a).unwrap();
+        assert_eq!(
+            (text.as_str(), canonical.as_str(), hash.as_str()),
+            ("alpha", new_canonical, new_hash.as_str())
+        );
+        // The other record is untouched.
+        assert!(store.find_by_hash("rm-b").unwrap() == Some(b));
+        drop(store);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 6.3/6.4: text-change patch re-embeds via evidence-backed
+    /// delete-plus-insert with the SAME explicit rowid (probe items 5+8),
+    /// keeping the public ID stable while the vector bytes change.
+    #[test]
+    fn patch_text_change_replaces_vector_with_same_rowid() {
+        let root = tmp_root();
+        let (a, _) = seed_two(&root);
+        let mut store = SqliteStore::open_existing_rw(&root).unwrap();
+        let vec_before = embedding_bytes(&store.conn, a);
+        let mut new_emb = vec![0.1f32; INGEST_DIMENSION as usize];
+        new_emb[0] = 0.9;
+        let new_hash = crate::metadata::compute_identity(r#"{"g":"1"}"#, "alpha v2");
+        store
+            .apply_patch(a, "alpha v2", r#"{"g":"1"}"#, &new_hash, Some(&new_emb))
+            .unwrap();
+        // Same rowid, new bytes, identical table footprint.
+        let vec_after = embedding_bytes(&store.conn, a);
+        assert_ne!(vec_after, vec_before);
+        assert_eq!(vec_after.len(), INGEST_DIMENSION as usize * 4);
+        assert_eq!(table_counts(&store.conn), (2, 2, 2));
+        let nvec: i64 = store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM vecs WHERE rowid=?1",
+                rusqlite::params![a],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(nvec, 1);
+        assert!(store.find_by_hash(&new_hash).unwrap() == Some(a));
+        assert!(store.find_by_hash("rm-a").unwrap().is_none());
+        drop(store);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 6.3: a patch whose hash collides with another live record fails
+    /// inside the transaction (UNIQUE) with no partial state on either row.
+    #[test]
+    fn patch_hash_collision_rolls_back_with_both_rows_intact() {
+        let root = tmp_root();
+        let (a, b) = seed_two(&root);
+        let mut store = SqliteStore::open_existing_rw(&root).unwrap();
+        let before_a = store.read_for_patch(a).unwrap();
+        let before_b = store.read_for_patch(b).unwrap();
+        let vec_a_before = embedding_bytes(&store.conn, a);
+        // Force B onto A's hash through the store seam (orchestration would
+        // reject this before embedding; here it proves tx atomicity).
+        let colliding_hash = before_a.2.clone();
+        let emb = vec![0.5f32; INGEST_DIMENSION as usize];
+        assert!(
+            store
+                .apply_patch(b, "alpha", r#"{"g":"1"}"#, &colliding_hash, Some(&emb))
+                .is_err()
+        );
+        assert_eq!(store.read_for_patch(a).unwrap(), before_a);
+        assert_eq!(store.read_for_patch(b).unwrap(), before_b);
+        assert_eq!(embedding_bytes(&store.conn, a), vec_a_before);
+        assert_eq!(table_counts(&store.conn), (2, 2, 2));
+        drop(store);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 6.3: patch on a missing row is record-not-found with no writes.
+    #[test]
+    fn patch_missing_row_is_not_found_with_no_side_effects() {
+        let root = tmp_root();
+        seed_two(&root);
+        let mut store = SqliteStore::open_existing_rw(&root).unwrap();
+        let before = table_counts(&store.conn);
+        let emb = vec![0.5f32; INGEST_DIMENSION as usize];
+        assert!(matches!(
+            store.apply_patch(999, "x", "{}", "deadbeef", Some(&emb)),
+            Err(LibraryError::MissingDefinition { .. })
+        ));
+        assert_eq!(table_counts(&store.conn), before);
+        drop(store);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

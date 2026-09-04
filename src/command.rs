@@ -55,10 +55,19 @@ pub enum Command {
         /// New definition text.
         value: String,
     },
-    /// `remove <ID>` — remove a definition by id.
+    /// `remove <ID>` — RAG hard delete by positive integer record id.
     Remove {
-        /// Target definition id.
+        /// Target record id (validated to a positive integer at execution).
         id: String,
+    },
+    /// `patch <ID> [--text <TEXT>] [--metadata <JSON>]` — RAG record update.
+    Patch {
+        /// Target record id (validated to a positive integer at execution).
+        id: String,
+        /// Replacement text when `--text` was supplied.
+        text: Option<String>,
+        /// Raw replacement metadata JSON when `--metadata` was supplied.
+        metadata_raw: Option<String>,
     },
     /// `list [--format markdown|json|yaml]` — list definition IDs (read-only).
     List {
@@ -92,6 +101,7 @@ impl Command {
             Command::Insert { .. } => "insert",
             Command::Edit { .. } => "edit",
             Command::Remove { .. } => "remove",
+            Command::Patch { .. } => "patch",
             Command::List { .. } => "list",
             Command::Ingest { .. } => "ingest",
             Command::Query { .. } => "query",

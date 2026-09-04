@@ -84,7 +84,7 @@ mod tests {
     }
 
     #[test]
-    fn new_rejects_unsafe_id() {
+    fn new_rejects_invalid_id() {
         assert!(DefinitionBlock::new("a b", "body").is_err());
     }
 

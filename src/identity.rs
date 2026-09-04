@@ -17,7 +17,7 @@ const ID_EXTRA: &[char] = &['.', '_', '-'];
 /// Returns `Ok(())` for a non-empty id composed solely of ASCII alphanumeric
 /// characters plus `.`, `_`, and `-`. Returns
 /// [`LibraryError::MalformedDocument`] (the canonical-document error category)
-/// for any unsafe id: empty, or containing whitespace, quotes, newlines, or
+/// for any rejected id: empty, or containing whitespace, quotes, newlines, or
 /// marker syntax.
 pub fn validate_id(id: &str) -> Result<(), LibraryError> {
     if id.is_empty() {

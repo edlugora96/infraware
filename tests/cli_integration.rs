@@ -167,13 +167,20 @@ fn edit_replaces_body() {
 }
 
 #[test]
-fn remove_deletes_definition() {
+fn remove_string_id_is_usage_under_rag_contract() {
+    // The approved RAG specs own the `remove` verb: the ID must be a
+    // positive integer record id, so a legacy string id is a usage error
+    // (status 2, empty stdout) even with a seeded legacy store present.
+    // Record deletion now lives in the vector index, not the Markdown doc.
     let cwd = TempCwd::new();
     cwd.init_with_seed();
-    let (status, _stdout, _stderr) = exec(&["remove", "seed"]);
-    assert_eq!(status, 0);
+    let (status, stdout, stderr) = exec(&["remove", "seed"]);
+    assert_eq!(status, EXIT_USAGE);
+    assert!(stdout.is_empty(), "no stdout on usage error");
+    assert!(!stderr.is_empty());
+    // The legacy document is untouched by the rejected RAG remove.
     let text = cwd.canonical_text();
-    assert!(!text.contains("id=\"seed\""));
+    assert!(text.contains("id=\"seed\""));
     assert!(text.contains("unrelated prose"));
 }
 
@@ -266,10 +273,13 @@ fn edit_absent_is_rejected() {
 
 #[test]
 fn remove_absent_is_rejected() {
+    // Non-integer ids never reach storage: usage error with the document
+    // unchanged, mirroring the RAG remove contract.
     let cwd = TempCwd::new();
     cwd.init_with_seed();
-    let (status, _stdout, _stderr) = exec(&["remove", "ghost"]);
-    assert_eq!(status, EXIT_FAILURE);
+    let (status, stdout, _stderr) = exec(&["remove", "ghost"]);
+    assert_eq!(status, EXIT_USAGE);
+    assert!(stdout.is_empty(), "no stdout on usage error");
     assert!(cwd.canonical_text().contains("initial"));
 }
 

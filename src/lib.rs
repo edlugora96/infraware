@@ -33,9 +33,11 @@ mod lifecycle;
 mod metadata;
 mod model_cache;
 mod parser;
+mod patch;
 mod persistence;
 mod projection;
 mod query;
+mod remove;
 mod vec_shim;
 mod vec_store;
 

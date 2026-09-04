@@ -25,7 +25,7 @@ pub struct Definition {
 impl Definition {
     /// Construct a definition, validating the id through the centralized rule.
     ///
-    /// Returns [`LibraryError::MalformedDocument`] for an unsafe id so callers
+    /// Returns [`LibraryError::MalformedDocument`] for a rejected id so callers
     /// map it to the same typed error category Plan 2 uses (design D3, no local
     /// duplicate validation logic).
     pub fn new(id: &str, body: &str) -> Result<Definition, LibraryError> {

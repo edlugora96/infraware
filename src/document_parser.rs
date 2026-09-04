@@ -194,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_id_is_error() {
+    fn invalid_id_is_error() {
         let src = "<!-- infraware:definition id=\"a b\" -->body<!-- /infraware:definition -->";
         assert!(parse_document(src).is_err());
     }

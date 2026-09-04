@@ -87,12 +87,18 @@ pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, Library
             })
         }
         Command::Remove { id } => {
-            definition::remove(root, &id)?;
-            Ok(DispatchOutput {
-                format: OutputFormat::Markdown,
-                body: String::new(),
-            })
+            // RAG `remove` (parent + child specs): hard delete by positive
+            // integer record id across records/meta_kv/vecs. The legacy
+            // Markdown definition store owns no `remove` behavior under the
+            // approved RAG specs, so every `remove` routes here; ID shape,
+            // storage, and record-not-found rules live in `remove::run`.
+            crate::remove::run(root, &id)
         }
+        Command::Patch {
+            id,
+            text,
+            metadata_raw,
+        } => crate::patch::run(root, &id, text.as_deref(), metadata_raw.as_deref()),
         Command::List { format } => {
             let body = definition::list(root, format)?;
             Ok(DispatchOutput { format, body })
@@ -257,7 +263,10 @@ mod tests {
     }
 
     #[test]
-    fn remove_requires_storage() {
+    fn remove_non_integer_id_is_usage_without_touching_storage() {
+        // RAG `remove` requires a positive integer id: a non-integer id is
+        // a usage error (status 2) and performs no storage work, even on a
+        // fresh root with no index and no legacy store.
         let root = temp_root();
         assert_eq!(
             dispatch(
@@ -266,8 +275,76 @@ mod tests {
                 },
                 &root.0,
             ),
-            Err(LibraryError::UninitializedStorage)
+            Err(LibraryError::InvalidInput {
+                message: "remove requires a positive integer <ID>, found: abc".to_string(),
+            })
         );
+        assert!(!root.0.join(".infraware").exists());
+    }
+
+    #[test]
+    fn remove_numeric_id_on_missing_storage_is_operational() {
+        // A well-shaped id with no index present fails operationally
+        // (status 1) and creates no files.
+        let root = temp_root();
+        let err = dispatch(
+            Command::Remove {
+                id: "1".to_string(),
+            },
+            &root.0,
+        )
+        .unwrap_err();
+        assert!(!err.is_usage());
+        assert!(!root.0.join(".infraware").exists());
+    }
+
+    #[test]
+    fn remove_and_patch_route_through_dispatch_on_seeded_index() {
+        // End-to-end dispatch coverage over a real index seeded through the
+        // storage seam with synthetic embeddings (no model needed): remove
+        // emits the exact success JSON, repeat remove is record-not-found,
+        // and a metadata-only patch no-ops without model work.
+        use crate::ingest::{HashStore, INGEST_DIMENSION};
+        let root = temp_root();
+        let mut store = crate::vec_store::SqliteStore::open(&root.0).unwrap();
+        let emb = vec![0.5f32; INGEST_DIMENSION as usize];
+        let canonical = crate::metadata::canonicalize_metadata(None).unwrap();
+        let hash = crate::metadata::compute_identity(&canonical, "hello");
+        let id = store.insert(&hash, "hello", &canonical, &emb).unwrap();
+        drop(store);
+        let out =
+            dispatch(Command::Remove { id: id.to_string() }, &root.0).expect("remove succeeds");
+        assert_eq!(out.body, format!("{{\"id\":{id},\"removed\":true}}"));
+        assert_eq!(
+            dispatch(Command::Remove { id: id.to_string() }, &root.0,),
+            Err(LibraryError::MissingDefinition { id: id.to_string() })
+        );
+        // Re-seed and exercise the metadata-only patch path through
+        // dispatch (no embedding involved, so no model cache is needed).
+        let mut store = crate::vec_store::SqliteStore::open(&root.0).unwrap();
+        let hash2 = crate::metadata::compute_identity(&canonical, "world");
+        let id2 = store.insert(&hash2, "world", &canonical, &emb).unwrap();
+        drop(store);
+        let out = dispatch(
+            Command::Patch {
+                id: id2.to_string(),
+                text: None,
+                metadata_raw: Some("{}".to_string()),
+            },
+            &root.0,
+        )
+        .expect("identical patch succeeds");
+        assert_eq!(out.body, format!("{{\"id\":{id2},\"patched\":false}}"));
+        let out = dispatch(
+            Command::Patch {
+                id: id2.to_string(),
+                text: None,
+                metadata_raw: Some(r#"{"a":"1"}"#.to_string()),
+            },
+            &root.0,
+        )
+        .expect("metadata patch succeeds");
+        assert_eq!(out.body, format!("{{\"id\":{id2},\"patched\":true}}"));
     }
 
     #[test]
