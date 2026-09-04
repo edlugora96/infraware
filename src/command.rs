@@ -63,6 +63,13 @@ pub enum Command {
         /// Effective output format (defaults to [`OutputFormat::Markdown`]).
         format: OutputFormat,
     },
+    /// `ingest <TEXT> [<METADATA-JSON>]` — vector write path (behavior deferred).
+    Ingest {
+        /// Text to ingest.
+        text: String,
+        /// Raw metadata JSON, if supplied.
+        metadata_raw: Option<String>,
+    },
 }
 
 impl Command {
@@ -76,6 +83,7 @@ impl Command {
             Command::Edit { .. } => "edit",
             Command::Remove { .. } => "remove",
             Command::List { .. } => "list",
+            Command::Ingest { .. } => "ingest",
         }
     }
 }
@@ -167,6 +175,18 @@ mod tests {
             }
             .name(),
             "list"
+        );
+    }
+
+    #[test]
+    fn ingest_name_is_ingest() {
+        assert_eq!(
+            Command::Ingest {
+                text: "x".to_string(),
+                metadata_raw: None,
+            }
+            .name(),
+            "ingest"
         );
     }
 }

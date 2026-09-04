@@ -30,6 +30,7 @@ pub fn parse_args(argv: &[String]) -> Result<Command, LibraryError> {
         "edit" => parse_edit(&mut iter),
         "remove" => parse_remove(&mut iter),
         "list" => parse_list(&mut iter),
+        "ingest" => parse_ingest(&mut iter),
         // `set`/`rm` and any other token are unknown commands, never aliases.
         other => Err(LibraryError::InvalidInput {
             message: format!("unknown command: {other}"),
@@ -257,6 +258,41 @@ where
         }
     }
     Ok(Command::List { format })
+}
+
+/// Parse `ingest <TEXT> [<METADATA-JSON>]` — exactly 1-2 positional args, no flags.
+fn parse_ingest<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
+where
+    I: Iterator<Item = &'a String>,
+{
+    let text = iter.next().ok_or_else(|| LibraryError::InvalidInput {
+        message: "ingest requires <TEXT>".to_string(),
+    })?;
+    if text.starts_with("--") {
+        return Err(LibraryError::InvalidInput {
+            message: format!("unknown option for ingest: {text}"),
+        });
+    }
+    let metadata_raw = match iter.next() {
+        None => None,
+        Some(second) => {
+            if second.starts_with("--") {
+                return Err(LibraryError::InvalidInput {
+                    message: format!("unknown option for ingest: {second}"),
+                });
+            }
+            Some(second.clone())
+        }
+    };
+    if let Some(extra) = iter.next() {
+        return Err(LibraryError::InvalidInput {
+            message: format!("unexpected extra argument for ingest: {extra}"),
+        });
+    }
+    Ok(Command::Ingest {
+        text: text.clone(),
+        metadata_raw,
+    })
 }
 
 /// Parse `remove <ID>`.
@@ -511,5 +547,62 @@ mod tests {
     #[test]
     fn reject_add_command() {
         assert!(parse_args(&args(&["add", "x", "--value", "y"])).is_err());
+    }
+
+    #[test]
+    fn parse_ingest_text_only() {
+        assert_eq!(
+            parse_args(&args(&["ingest", "hello"])),
+            Ok(Command::Ingest {
+                text: "hello".to_string(),
+                metadata_raw: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_ingest_with_metadata() {
+        assert_eq!(
+            parse_args(&args(&["ingest", "hello", "{\"k\":\"v\"}"])),
+            Ok(Command::Ingest {
+                text: "hello".to_string(),
+                metadata_raw: Some("{\"k\":\"v\"}".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn reject_ingest_missing_text() {
+        assert_eq!(
+            parse_args(&args(&["ingest"])),
+            Err(LibraryError::InvalidInput {
+                message: "ingest requires <TEXT>".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn reject_ingest_third_argument() {
+        assert!(parse_args(&args(&["ingest", "a", "b", "c"])).is_err());
+    }
+
+    #[test]
+    fn reject_ingest_flag_first() {
+        assert_eq!(
+            parse_args(&args(&["ingest", "--help"])),
+            Err(LibraryError::InvalidInput {
+                message: "unknown option for ingest: --help".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn reject_ingest_flag_second() {
+        assert_eq!(
+            parse_args(&args(&["ingest", "hello", "--format"])),
+            Err(LibraryError::InvalidInput {
+                message: "unknown option for ingest: --format".to_string(),
+            })
+        );
     }
 }

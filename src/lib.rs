@@ -14,7 +14,7 @@
 //! - [`dispatch`] — the single caller-independent dispatch boundary.
 //! - [`run`] — the thin binary adapter (parse → dispatch → streams/status).
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 mod analyze;
 mod command;
@@ -23,14 +23,20 @@ mod definition_model;
 mod dispatch;
 mod document;
 mod document_parser;
+mod embed;
 mod error;
 mod format;
 mod guidance;
 mod identity;
+mod ingest;
 mod lifecycle;
+mod metadata;
+mod model_cache;
 mod parser;
 mod persistence;
 mod projection;
+mod vec_shim;
+mod vec_store;
 
 pub use command::Command;
 pub use definition::{edit, get, insert, remove};

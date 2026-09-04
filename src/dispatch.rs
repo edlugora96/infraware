@@ -4,6 +4,7 @@ use crate::command::Command;
 use crate::definition;
 use crate::error::LibraryError;
 use crate::format::OutputFormat;
+use crate::ingest;
 use crate::lifecycle;
 use std::path::Path;
 
@@ -96,6 +97,7 @@ pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, Library
             let body = definition::list(root, format)?;
             Ok(DispatchOutput { format, body })
         }
+        Command::Ingest { text, metadata_raw } => ingest::run(root, &text, metadata_raw.as_deref()),
     }
 }
 
@@ -261,5 +263,44 @@ mod tests {
             ),
             Err(LibraryError::UninitializedStorage)
         );
+    }
+
+    #[test]
+    fn ingest_duplicate_offline_from_prepopulated_store() {
+        use crate::ingest::{HashStore, INGEST_DIMENSION};
+        let root = temp_root();
+        let mut store = crate::vec_store::SqliteStore::open(&root.0).unwrap();
+        let canonical = crate::metadata::canonicalize_metadata(None).unwrap();
+        let hash = crate::metadata::compute_identity(&canonical, "hello");
+        let emb = vec![0.5f32; INGEST_DIMENSION as usize];
+        let id = store.insert(&hash, "hello", &canonical, &emb).unwrap();
+        drop(store);
+        let out = dispatch(
+            Command::Ingest {
+                text: "hello".to_string(),
+                metadata_raw: None,
+            },
+            &root.0,
+        )
+        .expect("duplicate ingest succeeds");
+        let v: serde_json::Value = serde_json::from_str(&out.body).unwrap();
+        assert_eq!(v["id"], id);
+        assert_eq!(v["duplicate"], true);
+        assert_eq!(v.as_object().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn ingest_invalid_input_status() {
+        let root = temp_root();
+        let err = dispatch(
+            Command::Ingest {
+                text: "   ".to_string(),
+                metadata_raw: None,
+            },
+            &root.0,
+        )
+        .unwrap_err();
+        assert!(err.is_usage());
+        assert!(matches!(err, LibraryError::InvalidInput { .. }));
     }
 }
