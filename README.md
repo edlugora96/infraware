@@ -67,3 +67,20 @@ The six verbs are `ingest`, `query`, `list`, `get`, `patch`, and `remove`. They 
 - Only ingest creates a missing store, and it creates a fresh schema with informational `schema_version=1`. Other verbs require an existing compatible store and never migrate or repair it.
 - `query <TASK_TEXT>` searches historical task embeddings, follows task/rule pair relations, and returns nearest tasks first.
 - Failed SQLite writes roll back. Usage and validation failures exit 2 with empty stdout. Store and operational failures exit 1 with empty stdout and one `error:` line on stderr.
+
+### Repository distance settings
+
+Infraware optionally reads `root/.infraware/settings.yaml`, where `root` is the repository root passed to the command. The supported schema is:
+
+```yaml
+distances:
+  task_dedup: 0.15
+  rule_dedup: 0.15
+  query_max: 0.15
+```
+
+The three keys are independent. Each defaults to `0.15` when it is missing or set to `null`. A missing file, empty or whitespace-only file, null YAML document, missing `distances` section, or null section also uses those defaults. Unknown keys are ignored at every supported level.
+
+Configured values must be finite numbers in the inclusive range `[0, 2]`. Malformed YAML, wrong-shaped roots or sections, invalid leaf types, non-finite values, and values outside that range produce an operational configuration error.
+
+`ingest` loads the settings for task and rule deduplication, `patch` loads them for task collision checks, and `query` loads `query_max` for both filtering and the response envelope. `list`, `get`, and `remove` do not load this file. Without settings, threshold behavior remains the existing `0.15` behavior. Settings do not change the CLI verbs, SQLite storage schema, stored vectors, or no-network behavior.
