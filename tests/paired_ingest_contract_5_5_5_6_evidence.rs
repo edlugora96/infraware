@@ -64,7 +64,12 @@ fn patch_recomputes_vectors_and_atomically_merges_all_owned_links() {
     ] {
         assert!(v.contains(required), "patch evidence missing {required:?}");
     }
-    assert!(p.contains("PatchOutcome { id, patched: true }"));
+    for required in ["PatchOutcome", "id", "patched: true", "duplicate"] {
+        assert!(
+            p.contains(required),
+            "patch outcome evidence missing {required:?}"
+        );
+    }
     // Historical rule rows/vectors are intentionally absent from patch/remove
     // deletion lists, while task-owned links are explicitly cleaned up.
     assert!(!v.contains("DELETE FROM rules"));

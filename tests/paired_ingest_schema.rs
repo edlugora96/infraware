@@ -4,7 +4,9 @@
 //! private/source hooks not exposed by the crate; those are reported rather
 //! than recreated here. These tests cover the public parser and CLI gates.
 
-use infraware::{Command, EXIT_FAILURE, EXIT_USAGE, parse_args};
+use infraware::{
+    Command, EXIT_FAILURE, EXIT_USAGE, Invocation, InvocationOptions, OutputFormat, parse_args,
+};
 use rusqlite::Connection;
 use std::fs;
 use std::path::PathBuf;
@@ -47,9 +49,15 @@ fn paired_parser_preserves_raw_fact_and_rule_text() {
     let rule = "find it exactly";
     assert_eq!(
         parse_args(&["ingest".into(), task.into(), rule.into()]),
-        Ok(Command::Ingest {
-            task_text: task.into(),
-            rule_text: rule.into()
+        Ok(Invocation {
+            command: Command::Ingest {
+                task_text: task.into(),
+                rule_text: rule.into()
+            },
+            options: InvocationOptions {
+                format: OutputFormat::Yaml,
+                detailed: false
+            }
         })
     );
 }

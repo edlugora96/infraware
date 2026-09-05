@@ -128,6 +128,16 @@ fn assert_operational_rejected(cwd: &TempCwd, args: &[&str]) {
     );
 }
 
+#[test]
+fn shared_flag_failures_and_status_missing_store_keep_boundaries() {
+    let cwd = TempCwd::new();
+    assert_usage_rejected(&cwd, &["status", "--format"]);
+    assert_usage_rejected(&cwd, &["status", "--format", "xml"]);
+    assert_usage_rejected(&cwd, &["status", "--detailed", "--detailed"]);
+    assert_operational_rejected(&cwd, &["status", "--format", "json"]);
+    assert_operational_rejected(&cwd, &["list", "--detailed"]);
+}
+
 // ---- remove ----
 
 #[test]
