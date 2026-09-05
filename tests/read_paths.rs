@@ -34,7 +34,7 @@ fn exec(p: &Path, a: &[&str]) -> (u8, String, String) {
 #[test]
 fn list_and_get_missing_store_fail_closed() {
     let p = root();
-    for a in [&["list"][..], &["get", "1"][..]] {
+    for a in [&["list"][..], &["get", "1"][..], &["status"][..]] {
         let (s, o, e) = exec(&p, a);
         assert_eq!(s, EXIT_FAILURE);
         assert!(o.is_empty());

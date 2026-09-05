@@ -50,7 +50,7 @@ fn patch_recomputes_vectors_and_atomically_merges_all_owned_links() {
     assert!(p.contains("embed(&text)") || p.contains("embed(&text)"));
     for required in [
         "let (table, key, vec_table, rel_key) = match entity",
-        "UPDATE {table} SET text=?1 WHERE {key}=?2",
+        "UPDATE {table} SET text=?1,updated_at=CASE WHEN text<>?1 THEN ?3 ELSE updated_at END WHERE {key}=?2",
         "SELECT rowid,embedding FROM {vec_table} WHERE rowid<>?1",
         "if distance <= threshold",
         "UPDATE OR IGNORE task_rule_relations SET {rel_key}=?1 WHERE {rel_key}=?2",

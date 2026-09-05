@@ -7,6 +7,7 @@ fn accepted_shapes() {
         vec!["list".into()],
         vec!["get".into(), "1".into()],
         vec!["remove".into(), "1".into()],
+        vec!["status".into()],
     ] {
         assert!(infraware::parse_args(&a).is_ok());
     }
@@ -62,6 +63,16 @@ fn rejected_legacy_and_bad_args() {
         assert!(infraware::parse_args(&a).unwrap_err().is_usage());
     }
 }
+#[test]
+fn status_rejects_operands_with_usage_status() {
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = run(vec!["status".into(), "extra".into()], &mut out, &mut err);
+    assert_eq!(code, EXIT_USAGE);
+    assert!(out.is_empty());
+    assert_eq!(String::from_utf8(err).unwrap().lines().count(), 1);
+}
+
 #[test]
 fn malformed_cli_has_status_two_empty_stdout() {
     let mut out = Vec::new();
