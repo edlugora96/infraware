@@ -49,13 +49,13 @@ fn patch_recomputes_vectors_and_atomically_merges_all_owned_links() {
     let v = source("vec_store");
     assert!(p.contains("embed(&text)") || p.contains("embed(&text)"));
     for required in [
-        "UPDATE tasks SET text",
-        "SELECT rowid,embedding FROM task_vecs WHERE rowid<>?1",
+        "let (table, key, vec_table, rel_key) = match entity",
+        "UPDATE {table} SET text=?1 WHERE {key}=?2",
+        "SELECT rowid,embedding FROM {vec_table} WHERE rowid<>?1",
         "if distance <= threshold",
-        "UPDATE OR IGNORE task_rule_relations",
-        "UPDATE OR IGNORE task_rule_relations",
-        "DELETE FROM task_vecs WHERE rowid=?1",
-        "DELETE FROM tasks WHERE task_id=?1",
+        "UPDATE OR IGNORE task_rule_relations SET {rel_key}=?1 WHERE {rel_key}=?2",
+        "DELETE FROM {vec_table} WHERE rowid=?1",
+        "DELETE FROM {delete_table} WHERE {delete_key}=?1",
         "let tx = self.conn.transaction().map_err(er)?",
         "tx.commit().map_err(er)?",
     ] {
@@ -75,12 +75,16 @@ fn list_get_and_remove_are_read_only_or_atomic_and_text_only() {
     let v = source("vec_store");
     for required in [
         "open_read_only",
-        "list_records",
+        "list_entities",
+        "read_entity",
         "skip(offset).take(limit)",
         "created_at",
         "output_get_json",
     ] {
-        assert!(r.contains(required), "record evidence missing {required:?}");
+        assert!(
+            r.contains(required) || v.contains(required),
+            "record evidence missing {required:?}"
+        );
     }
     for required in [
         "open_existing_rw",

@@ -1,5 +1,5 @@
 //! v2 CLI contract: exact grammar and stream/status behavior.
-use infraware::{Command, EXIT_USAGE, run};
+use infraware::{Command, EXIT_USAGE, Entity, ListEntity, run};
 use std::io::Cursor;
 fn exec(a: &[&str]) -> (Vec<u8>, Vec<u8>, u8) {
     let mut o = Cursor::new(Vec::new());
@@ -25,12 +25,16 @@ fn six_verbs_parse() {
         infraware::parse_args(&["list".into()]),
         Ok(Command::List {
             limit: 50,
-            offset: 0
+            offset: 0,
+            entity: ListEntity::Rules
         })
     );
     assert_eq!(
         infraware::parse_args(&["get".into(), "1".into()]),
-        Ok(Command::Get { id: "1".into() })
+        Ok(Command::Get {
+            id: "1".into(),
+            entity: Entity::Rules
+        })
     );
     assert!(
         infraware::parse_args(&["patch".into(), "1".into(), "--text".into(), "x".into()]).is_ok()
