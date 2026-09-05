@@ -36,7 +36,7 @@ mod status;
 mod vec_shim;
 mod vec_store;
 
-pub use command::{Command, Entity, Invocation, InvocationOptions, ListEntity};
+pub use command::{Command, Entity, Invocation, InvocationOptions};
 pub use dispatch::{DispatchOutput, dispatch};
 pub use error::LibraryError;
 pub use format::OutputFormat;
@@ -53,7 +53,7 @@ pub const EXIT_USAGE: u8 = 2;
 /// missing or incompatible store, backend errors).
 pub const EXIT_FAILURE: u8 = 1;
 
-const HELP_TEXT: &str = "Usage: infraware <COMMAND>\n\nCommands:\n  ingest <TASK_TEXT> <RULE_TEXT>\n  query <TASK_TEXT>\n  list [LIMIT] [OFFSET] [--entity rules|tasks|all]\n  get <ID> [--entity rules|tasks]\n  patch <ID> --text <TEXT> [--entity rules|tasks]\n  remove <ID>\n  status\n  revise <ID> --entity rules|tasks";
+const HELP_TEXT: &str = "Usage: infraware <COMMAND>\n\nCommands:\n  ingest <TASK_TEXT> <RULE_TEXT>\n  query <TASK_TEXT>\n  list [LIMIT] [OFFSET]\n  get <ID> [--entity rules|tasks]\n  patch <ID> --text <TEXT> [--entity rules|tasks]\n  remove <ID>\n  status\n  revise <ID> --entity rules|tasks";
 
 fn write_help<W: Write>(stdout: &mut W) {
     let _ = writeln!(stdout, "{HELP_TEXT}");
@@ -113,7 +113,9 @@ where
             // the stream contract explicit.
             if !output.body.is_empty() {
                 let _ = stdout.write_all(output.body.as_bytes());
-                let _ = stdout.write_all(b"\n");
+                if !output.body.ends_with('\n') {
+                    let _ = stdout.write_all(b"\n");
+                }
             }
             0
         }

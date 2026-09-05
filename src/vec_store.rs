@@ -38,6 +38,28 @@ pub(crate) struct QueryCandidateRow(
     pub(crate) String,
 );
 
+pub(crate) struct GroupedRulePage {
+    pub(crate) total: usize,
+    pub(crate) limit: usize,
+    pub(crate) offset: usize,
+    pub(crate) rules: Vec<GroupedRule>,
+}
+
+pub(crate) struct GroupedRule {
+    pub(crate) id: i64,
+    pub(crate) text: String,
+    pub(crate) created_at: i64,
+    pub(crate) updated_at: Option<i64>,
+    pub(crate) tasks: Vec<GroupedTask>,
+}
+
+pub(crate) struct GroupedTask {
+    pub(crate) id: i64,
+    pub(crate) text: String,
+    pub(crate) created_at: i64,
+    pub(crate) updated_at: Option<i64>,
+}
+
 pub(crate) struct SqliteStore {
     conn: rusqlite::Connection,
 }
@@ -336,36 +358,81 @@ impl SqliteStore {
             .map_err(er)?
             .ok_or_else(|| LibraryError::MissingDefinition { id: id.to_string() })
     }
-    pub(crate) fn list_entities(
+    pub(crate) fn grouped_rule_page(
         &mut self,
-        entities: &[crate::command::Entity],
-    ) -> Result<Vec<(i64, String, i64, crate::command::Entity)>, LibraryError> {
+        requested_limit: usize,
+        offset: usize,
+    ) -> Result<GroupedRulePage, LibraryError> {
+        let limit = requested_limit.min(500);
+        let limit_sql = i64::try_from(limit).map_err(er)?;
+        let offset_sql = i64::try_from(offset).map_err(er)?;
         let tx = self.conn.transaction().map_err(er)?;
-        let mut out = Vec::new();
-        for entity in entities {
-            let (table, key) = match entity {
-                crate::command::Entity::Rules => ("rules", "rule_id"),
-                crate::command::Entity::Tasks => ("tasks", "task_id"),
-            };
-            let mut stmt = tx
-                .prepare(&format!(
-                    "SELECT {key},text,created_at FROM {table} ORDER BY {key}"
-                ))
-                .map_err(er)?;
-            let rows = stmt
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-                .map_err(er)?;
-            out.extend(
-                rows.map(|row| {
-                    row.map(|(id, text, created)| (id, text, created, *entity))
-                        .map_err(er)
+
+        let total: i64 = tx
+            .query_row("SELECT count(*) FROM rules", [], |row| row.get(0))
+            .map_err(er)?;
+        let mut rules = tx
+            .prepare(
+                "SELECT rule_id,text,created_at,updated_at FROM rules \
+                 ORDER BY created_at ASC, rule_id ASC LIMIT ?1 OFFSET ?2",
+            )
+            .map_err(er)?
+            .query_map(rusqlite::params![limit_sql, offset_sql], |row| {
+                Ok(GroupedRule {
+                    id: row.get(0)?,
+                    text: row.get(1)?,
+                    created_at: row.get(2)?,
+                    updated_at: row.get(3)?,
+                    tasks: Vec::new(),
                 })
-                .collect::<Result<Vec<_>, _>>()?,
+            })
+            .map_err(er)?
+            .map(|row| row.map_err(er))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if !rules.is_empty() {
+            let placeholders = std::iter::repeat("?")
+                .take(rules.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT r.rule_id,t.task_id,t.text,t.created_at,t.updated_at \
+                 FROM task_rule_relations r JOIN tasks t ON t.task_id=r.task_id \
+                 WHERE r.rule_id IN ({placeholders}) \
+                 ORDER BY r.rule_id ASC, t.created_at ASC, t.task_id ASC"
             );
+            let ids = rules.iter().map(|rule| rule.id).collect::<Vec<_>>();
+            let mut stmt = tx.prepare(&sql).map_err(er)?;
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(ids), |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        GroupedTask {
+                            id: row.get(1)?,
+                            text: row.get(2)?,
+                            created_at: row.get(3)?,
+                            updated_at: row.get(4)?,
+                        },
+                    ))
+                })
+                .map_err(er)?;
+            for row in rows {
+                let (rule_id, task) = row.map_err(er)?;
+                if let Some(rule) = rules.iter_mut().find(|rule| rule.id == rule_id) {
+                    rule.tasks.push(task);
+                }
+            }
         }
+
         tx.commit().map_err(er)?;
-        Ok(out)
+        Ok(GroupedRulePage {
+            total: usize::try_from(total).map_err(er)?,
+            limit,
+            offset,
+            rules,
+        })
     }
+
     #[cfg(test)]
     pub(crate) fn insert_status_test_row(
         &self,
@@ -621,6 +688,113 @@ mod tests {
         drop(s);
         let _ = std::fs::remove_dir_all(p);
     }
+    #[test]
+    fn grouped_rule_pages_use_explicit_relations_and_entity_ordering() {
+        let p = root();
+        let mut store = SqliteStore::open(&p).unwrap();
+
+        // Keep the fixture rows explicit. Relation timestamps intentionally
+        // disagree with the entity timestamps so the assertions catch an
+        // accidental relation-order sort.
+        for (id, text, created_at) in [
+            (1, "rule one", 100),
+            (2, "rule two", 100),
+            (3, "rule without tasks", 200),
+            (4, "rule outside page", 300),
+        ] {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO rules(rule_id,text,created_at,updated_at) VALUES(?1,?2,?3,NULL)",
+                    rusqlite::params![id, text, created_at],
+                )
+                .unwrap();
+        }
+        for (id, text, created_at) in [
+            (1, "shared early task", 50),
+            (2, "shared late task", 50),
+            (3, "unrelated task", 70),
+        ] {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO tasks(task_id,text,created_at,updated_at) VALUES(?1,?2,?3,NULL)",
+                    rusqlite::params![id, text, created_at],
+                )
+                .unwrap();
+        }
+        for (task_id, rule_id, relation_created_at) in [
+            (2, 1, 10), // later relation row, but task ID tie-breaks first/second
+            (1, 1, 20),
+            (1, 2, 30), // task 1 is reused under both returned rules
+            (2, 2, 40),
+            (3, 4, 1), // relation belongs to a rule outside the selected page
+        ] {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO task_rule_relations(task_id,rule_id,created_at) VALUES(?1,?2,?3)",
+                    rusqlite::params![task_id, rule_id, relation_created_at],
+                )
+                .unwrap();
+        }
+
+        let first_page = store.grouped_rule_page(2, 0).unwrap();
+        assert_eq!(first_page.total, 4);
+        assert_eq!(first_page.limit, 2);
+        assert_eq!(first_page.offset, 0);
+        assert_eq!(
+            first_page
+                .rules
+                .iter()
+                .map(|rule| rule.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(
+            first_page.rules[0]
+                .tasks
+                .iter()
+                .map(|task| task.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(
+            first_page.rules[1]
+                .tasks
+                .iter()
+                .map(|task| task.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(first_page.rules[0].tasks[0].text, "shared early task");
+        assert_eq!(first_page.rules[1].tasks[0].text, "shared early task");
+
+        // Nested tasks are complete for a rule page. They are not paged, and
+        // relations from rules outside that page cannot leak into it.
+        let second_page = store.grouped_rule_page(1, 1).unwrap();
+        assert_eq!(second_page.total, 4);
+        assert_eq!(second_page.rules.len(), 1);
+        assert_eq!(second_page.rules[0].id, 2);
+        assert_eq!(
+            second_page.rules[0]
+                .tasks
+                .iter()
+                .map(|task| task.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(!second_page.rules[0].tasks.iter().any(|task| task.id == 3));
+
+        let empty_rule_page = store.grouped_rule_page(1, 2).unwrap();
+        assert_eq!(empty_rule_page.total, 4);
+        assert_eq!(empty_rule_page.rules[0].id, 3);
+        assert!(empty_rule_page.rules[0].tasks.is_empty());
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
     #[test]
     fn old_store_is_rejected_without_repair() {
         let p = root();

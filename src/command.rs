@@ -13,17 +13,6 @@ pub enum Entity {
     Tasks,
 }
 
-/// A closed selector for list, including the combined view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ListEntity {
-    /// Rule records.
-    Rules,
-    /// Task records.
-    Tasks,
-    /// Rules followed by tasks.
-    All,
-}
-
 /// Shared output controls for every verb.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvocationOptions {
@@ -66,10 +55,8 @@ pub enum Command {
     List {
         /// Page size after clamping to max 500.
         limit: usize,
-        /// Row offset into the ascending-id filtered set.
+        /// Row offset into the ascending-id rule set.
         offset: usize,
-        /// Entity table to list.
-        entity: ListEntity,
     },
     /// `get <ID>` — direct SQLite point fetch by positive integer record id.
     Get {

@@ -67,11 +67,7 @@ pub fn dispatch(invocation: Invocation, root: &Path) -> Result<DispatchOutput, L
         }
         // Read-only SQLite verbs through the thin records cores: direct
         // point fetch (`get`) and ascending-id snapshot scan (`list`).
-        Command::List {
-            limit,
-            offset,
-            entity,
-        } => crate::records::list(root, limit, offset, entity),
+        Command::List { limit, offset } => crate::records::list(root, limit, offset),
         Command::Get { id, entity } => crate::records::get(root, &id, entity),
         Command::Patch { id, text, entity } => {
             // Patch validates its complete payload before settings/configuration

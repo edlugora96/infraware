@@ -5,7 +5,7 @@
 //! `analyze`, `insert`, `edit`), aliases (`set`, `rm`), and removed legacy
 //! flags (`--format`, `--suggest`) are rejected as usage errors.
 
-use crate::command::{Command, Entity, Invocation, InvocationOptions, ListEntity};
+use crate::command::{Command, Entity, Invocation, InvocationOptions};
 use crate::error::LibraryError;
 use crate::format::OutputFormat;
 
@@ -99,32 +99,14 @@ where
     })
 }
 
-fn parse_entity_value(
-    raw: &str,
-    allow_all: bool,
-    command: &str,
-) -> Result<EntityOrList, LibraryError> {
+fn parse_entity_value(raw: &str, command: &str) -> Result<Entity, LibraryError> {
     match raw {
-        "rules" => Ok(if allow_all {
-            EntityOrList::List(ListEntity::Rules)
-        } else {
-            EntityOrList::Single(Entity::Rules)
-        }),
-        "tasks" => Ok(if allow_all {
-            EntityOrList::List(ListEntity::Tasks)
-        } else {
-            EntityOrList::Single(Entity::Tasks)
-        }),
-        "all" if allow_all => Ok(EntityOrList::List(ListEntity::All)),
+        "rules" => Ok(Entity::Rules),
+        "tasks" => Ok(Entity::Tasks),
         _ => Err(LibraryError::InvalidInput {
             message: format!("invalid --entity value for {command}: {raw}"),
         }),
     }
-}
-
-enum EntityOrList {
-    Single(Entity),
-    List(ListEntity),
 }
 
 fn parse_entity_option<'a, I>(
@@ -146,18 +128,18 @@ where
     let value = iter.next().ok_or_else(|| LibraryError::InvalidInput {
         message: "--entity requires a value".into(),
     })?;
-    let entity = parse_entity_value(value, allow_all, command)?;
+    if !allow_all && value == "all" {
+        return Err(LibraryError::InvalidInput {
+            message: format!("invalid --entity value for {command}: all"),
+        });
+    }
+    let entity = parse_entity_value(value, command)?;
     if iter.next().is_some() {
         return Err(LibraryError::InvalidInput {
             message: format!("duplicate --entity option for {command}"),
         });
     }
-    match entity {
-        EntityOrList::Single(e) => Ok(e),
-        EntityOrList::List(_) => Err(LibraryError::InvalidInput {
-            message: format!("invalid --entity value for {command}: all"),
-        }),
-    }
+    Ok(entity)
 }
 
 /// Default page size for `list` when no limit positional is given.
@@ -183,34 +165,7 @@ fn parse_list<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
 where
     I: Iterator<Item = &'a String>,
 {
-    let owned: Vec<String> = iter.cloned().collect();
-    let mut positional = Vec::new();
-    let mut entity = ListEntity::Rules;
-    let mut entity_seen = false;
-    let mut i = 0;
-    while i < owned.len() {
-        if owned[i] == "--entity" {
-            if i + 1 >= owned.len() {
-                return Err(LibraryError::InvalidInput {
-                    message: "--entity requires a value".into(),
-                });
-            }
-            if entity_seen {
-                return Err(LibraryError::InvalidInput {
-                    message: "duplicate --entity option for list".into(),
-                });
-            }
-            entity_seen = true;
-            entity = match parse_entity_value(&owned[i + 1], true, "list")? {
-                EntityOrList::List(e) => e,
-                _ => unreachable!(),
-            };
-            i += 2;
-        } else {
-            positional.push(&owned[i]);
-            i += 1;
-        }
-    }
+    let positional: Vec<&String> = iter.collect();
     if positional.len() > 2 {
         return Err(LibraryError::InvalidInput {
             message: "unexpected extra argument for list".into(),
@@ -227,11 +182,7 @@ where
         .map(|s| parse_list_count(s, "offset"))
         .transpose()?
         .unwrap_or(0);
-    Ok(Command::List {
-        limit,
-        offset,
-        entity,
-    })
+    Ok(Command::List { limit, offset })
 }
 
 /// Parse `ingest <TASK_TEXT> <RULE_TEXT>` with exactly two positionals.
@@ -335,10 +286,7 @@ where
                 let value = iter.next().ok_or_else(|| LibraryError::InvalidInput {
                     message: "--entity requires a value".into(),
                 })?;
-                entity = match parse_entity_value(value, false, "patch")? {
-                    EntityOrList::Single(e) => e,
-                    _ => unreachable!(),
-                };
+                entity = parse_entity_value(value, "patch")?;
             }
             "--metadata" => {
                 return Err(LibraryError::InvalidInput {
@@ -388,10 +336,7 @@ where
     let value = iter.next().ok_or_else(|| LibraryError::InvalidInput {
         message: "--entity requires a value".into(),
     })?;
-    let entity = match parse_entity_value(value, false, "revise")? {
-        EntityOrList::Single(entity) => entity,
-        EntityOrList::List(_) => unreachable!(),
-    };
+    let entity = parse_entity_value(value, "revise")?;
     if iter.next().is_some() {
         return Err(LibraryError::InvalidInput {
             message: "unexpected extra argument for revise".into(),

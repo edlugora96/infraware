@@ -7,16 +7,17 @@
 //!
 //! - `get <ID>` is a direct point fetch by positive integer record id; a
 //!   missing record surfaces the distinct record-not-found error.
-//! - `list` returns records ordered by ascending id with a snapshot-consistent
+//! - `list` returns rules ordered by ascending id with a snapshot-consistent
 //!   `total`, plus `limit` (default 50, clamped to max 500) and `offset` paging.
 //!
 //! Storage failures (missing, unreadable, or incompatible index) map to a
 //! single detail-free operational error so the adapter reports status 1 with
 //! empty stdout and one `error:` line on stderr.
 
+use serde::Serialize;
 use std::path::Path;
 
-use crate::command::{Entity, ListEntity};
+use crate::command::Entity;
 use crate::dispatch::DispatchOutput;
 use crate::error::LibraryError;
 use crate::format::OutputFormat;
@@ -100,95 +101,83 @@ fn read_one(
     })
 }
 
-/// Successful `list` page: snapshot-consistent total plus ascending-id rows.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct ListedPage {
-    pub(crate) total: usize,
+/// Typed grouped list response shared by the JSON and YAML rendering paths.
+#[derive(Debug, Serialize)]
+pub(crate) struct ListResponse {
     pub(crate) limit: usize,
     pub(crate) offset: usize,
-    pub(crate) records: Vec<FetchedRecord>,
+    pub(crate) rules: Vec<ListRule>,
+    pub(crate) total: usize,
 }
 
-/// Render the exact compact `list` JSON:
-/// `{"total":N,"records":[{...},...]}` with rows in ascending id order.
-fn output_list_json(page: &ListedPage) -> String {
-    let mut out = format!(
-        "{{\"total\":{},\"limit\":{},\"offset\":{},\"records\":[",
-        page.total, page.limit, page.offset
-    );
-    for (i, record) in page.records.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(&format!(
-            "{{\"id\":{},\"text\":{},\"created_at\":{},\"entity\":{}}}",
-            record.id,
-            serde_json::to_string(&record.text).expect("text"),
-            record.created_at,
-            serde_json::to_string(match record.entity {
-                Entity::Rules => "rule",
-                Entity::Tasks => "task",
-            })
-            .expect("type")
-        ));
-    }
-    out.push_str("]}");
-    out
+#[derive(Debug, Serialize)]
+pub(crate) struct ListRule {
+    pub(crate) text: String,
+    pub(crate) id: i64,
+    pub(crate) created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) updated_at: Option<i64>,
+    pub(crate) tasks: Vec<ListTask>,
 }
 
-/// Execute `list` against `root`: read-only snapshot scan in ascending id
-/// order with `total` equal to the full filtered count from the same
-/// snapshot as `records`.
+#[derive(Debug, Serialize)]
+pub(crate) struct ListTask {
+    pub(crate) text: String,
+    pub(crate) id: i64,
+    pub(crate) created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) updated_at: Option<i64>,
+}
+
+/// Execute `list` against `root`: read-only snapshot scan of rules in
+/// timestamp and ID order with `total` equal to the full count from the same
+/// snapshot as the grouped rule page.
 ///
-/// `filter` is the canonical flat map (empty means no filtering): a row
-/// matches only when its stored metadata contains every filter pair with
-/// exact string equality. `limit`/`offset` page the filtered set
-/// (`limit` arrives clamped to max 500 with default 50, `offset` defaults
-/// to 0); clamping is re-applied defensively so direct callers cannot
-/// exceed the contract.
+/// `limit`/`offset` page the rule set (`limit` arrives clamped to max 500
+/// with default 50, `offset` defaults to 0); clamping is re-applied
+/// defensively so direct callers cannot exceed the contract.
 pub(crate) fn list(
     root: &Path,
     limit: usize,
     offset: usize,
-    entity: ListEntity,
 ) -> Result<DispatchOutput, LibraryError> {
     // Read-only open: a missing index is operational and creates nothing.
     let store = match crate::vec_store::SqliteStore::open_read_only(root) {
         Ok(store) => store,
         Err(_) => return Err(operational_err()),
     };
-    let entities = match entity {
-        ListEntity::Rules => vec![Entity::Rules],
-        ListEntity::Tasks => vec![Entity::Tasks],
-        ListEntity::All => vec![Entity::Rules, Entity::Tasks],
-    };
     let mut store = store;
-    let rows = store
-        .list_entities(&entities)
+    let grouped = store
+        .grouped_rule_page(limit, offset)
         .map_err(|_| operational_err())?;
-    let mut records = Vec::new();
-    for (id, text, created_at, entity) in rows {
-        records.push(FetchedRecord {
-            id,
-            text,
-            created_at,
-            entity,
-        });
-    }
-    // Snapshot-consistent total: full filtered count before paging. Rows
-    // already arrive in ascending id order from the single snapshot scan.
-    let total = records.len();
-    let limit = limit.min(500);
-    let page_records: Vec<FetchedRecord> = records.into_iter().skip(offset).take(limit).collect();
-    let page = ListedPage {
-        total,
-        limit,
-        offset,
-        records: page_records,
+    let response = ListResponse {
+        limit: grouped.limit,
+        offset: grouped.offset,
+        total: grouped.total,
+        rules: grouped
+            .rules
+            .into_iter()
+            .map(|rule| ListRule {
+                text: rule.text,
+                id: rule.id,
+                created_at: rule.created_at,
+                updated_at: rule.updated_at,
+                tasks: rule
+                    .tasks
+                    .into_iter()
+                    .map(|task| ListTask {
+                        text: task.text,
+                        id: task.id,
+                        created_at: task.created_at,
+                        updated_at: task.updated_at,
+                    })
+                    .collect(),
+            })
+            .collect(),
     };
     Ok(DispatchOutput {
         format: OutputFormat::Json,
-        body: output_list_json(&page),
+        body: serde_json::to_string(&response).expect("list response serialization must succeed"),
     })
 }
 
@@ -210,30 +199,52 @@ mod tests {
     }
 
     #[test]
-    fn list_pagination_preserves_total_and_order() {
-        let page = ListedPage {
+    fn grouped_list_response_contains_rules_tasks_and_timestamps() {
+        let response = ListResponse {
             total: 3,
             limit: 2,
             offset: 1,
-            records: vec![
-                FetchedRecord {
+            rules: vec![
+                ListRule {
+                    text: "rule".into(),
                     id: 2,
-                    text: "b".into(),
-                    created_at: 2,
-                    entity: Entity::Rules,
+                    created_at: 10,
+                    updated_at: None,
+                    tasks: vec![],
                 },
-                FetchedRecord {
+                ListRule {
+                    text: "second rule".into(),
                     id: 3,
-                    text: "c".into(),
-                    created_at: 3,
-                    entity: Entity::Rules,
+                    created_at: 11,
+                    updated_at: Some(12),
+                    tasks: vec![ListTask {
+                        text: "task".into(),
+                        id: 7,
+                        created_at: 9,
+                        updated_at: None,
+                    }],
                 },
             ],
         };
-        let value: serde_json::Value = serde_json::from_str(&output_list_json(&page)).unwrap();
-        assert_eq!(value["total"], 3);
-        assert_eq!(value["records"][0]["id"], 2);
-        assert_eq!(value["records"][1]["id"], 3);
+        let value = serde_json::to_value(response).unwrap();
+        let keys: std::collections::BTreeSet<String> =
+            value.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(
+            keys,
+            ["limit", "offset", "rules", "total"]
+                .into_iter()
+                .map(String::from)
+                .collect()
+        );
+        assert_eq!(value["rules"][0]["tasks"], serde_json::json!([]));
+        assert!(value["rules"][0].get("updated_at").is_none());
+        assert_eq!(value["rules"][1]["tasks"][0]["id"], 7);
+        assert_eq!(value["rules"][1]["updated_at"], 12);
+        assert!(value["rules"][1]["tasks"][0].get("updated_at").is_none());
+        let encoded = value.to_string();
+        assert!(!encoded.contains("records"));
+        assert!(!encoded.contains("entity"));
+        assert!(!encoded.contains("type"));
     }
 
     #[test]

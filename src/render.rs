@@ -1,6 +1,37 @@
 use crate::{error::LibraryError, format::OutputFormat};
 use serde_json::Value;
 
+fn project_list(value: &mut Value, detailed: bool) {
+    if let Some(rules) = value.get_mut("rules").and_then(Value::as_array_mut) {
+        for rule in rules {
+            if let Some(object) = rule.as_object_mut() {
+                if detailed {
+                    if object.get("updated_at") == Some(&Value::Null) {
+                        object.remove("updated_at");
+                    }
+                } else {
+                    object.remove("created_at");
+                    object.remove("updated_at");
+                }
+                if let Some(tasks) = object.get_mut("tasks").and_then(Value::as_array_mut) {
+                    for task in tasks {
+                        if let Some(task_object) = task.as_object_mut() {
+                            if detailed {
+                                if task_object.get("updated_at") == Some(&Value::Null) {
+                                    task_object.remove("updated_at");
+                                }
+                            } else {
+                                task_object.remove("created_at");
+                                task_object.remove("updated_at");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn render(
     name: &str,
     body: &str,
@@ -15,13 +46,7 @@ pub(crate) fn render(
             message: "render failed".into(),
         })?;
         if name == "list" {
-            if let Some(records) = value.get_mut("records").and_then(Value::as_array_mut) {
-                for record in records {
-                    if let Some(object) = record.as_object_mut() {
-                        object.remove("entity");
-                    }
-                }
-            }
+            project_list(&mut value, detailed);
         } else if let Some(object) = value.as_object_mut() {
             object.remove("duplicate");
         }
@@ -82,28 +107,11 @@ pub(crate) fn render(
                     }
                 }
             }
-            "list" => {
-                if let Some(a) = v.get_mut("records").and_then(Value::as_array_mut) {
-                    for r in a {
-                        if let Some(o) = r.as_object_mut() {
-                            let t = o.remove("entity").unwrap_or(Value::String("rule".into()));
-                            o.insert("type".into(), t);
-                            o.remove("created_at");
-                        }
-                    }
-                }
-            }
+            "list" => project_list(&mut v, false),
             _ => {}
         }
     } else if name == "list" {
-        if let Some(a) = v.get_mut("records").and_then(Value::as_array_mut) {
-            for r in a {
-                if let Some(o) = r.as_object_mut() {
-                    let t = o.remove("entity").unwrap_or(Value::String("rule".into()));
-                    o.insert("type".into(), t);
-                }
-            }
-        }
+        project_list(&mut v, detailed);
     }
     serde_yaml::to_string(&v).map_err(|_| LibraryError::Io {
         message: "render failed".into(),
@@ -201,44 +209,75 @@ mod tests {
         let json = render("get", get_body, OutputFormat::Json, false).unwrap();
         assert_eq!(json, get_body);
 
-        let list_body = r#"{"total":2,"limit":50,"offset":0,"records":[{"id":1,"text":"rule","created_at":10,"entity":"rule"},{"id":2,"text":"task","created_at":11,"entity":"task"}]}"#;
+        let list_body = r#"{"total":2,"limit":50,"offset":0,"rules":[{"id":1,"text":"rule","created_at":10,"updated_at":null,"tasks":[]},{"id":2,"text":"second","created_at":11,"updated_at":12,"tasks":[{"id":7,"text":"task","created_at":9,"updated_at":null}]}]}"#;
+        let yaml_keys = |value: &serde_yaml::Value| {
+            let mut keys: Vec<String> = value
+                .as_mapping()
+                .unwrap()
+                .keys()
+                .map(|k| k.as_str().unwrap().to_owned())
+                .collect();
+            keys.sort();
+            keys
+        };
         for detailed in [false, true] {
             let yaml = render("list", list_body, OutputFormat::Yaml, detailed).unwrap();
             assert!(yaml.ends_with('\n'));
             let value: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
             assert_eq!(value["total"], 2);
-            assert_eq!(value["records"][0]["type"], "rule");
-            assert_eq!(value["records"][1]["type"], "task");
-            let record_keys = |record: &serde_yaml::Value| {
-                let mut keys: Vec<String> = record
-                    .as_mapping()
-                    .unwrap()
-                    .keys()
-                    .map(|k| k.as_str().unwrap().to_owned())
-                    .collect();
-                keys.sort();
-                keys
-            };
             assert_eq!(
-                record_keys(&value["records"][0]),
+                value["rules"][0]["tasks"],
+                serde_yaml::Value::Sequence(vec![])
+            );
+            assert_eq!(
+                yaml_keys(&value["rules"][0]),
                 if detailed {
-                    vec!["created_at", "id", "text", "type"]
-                        .into_iter()
-                        .map(String::from)
-                        .collect::<Vec<String>>()
+                    vec!["created_at", "id", "tasks", "text"]
                 } else {
-                    vec!["id", "text", "type"]
-                        .into_iter()
-                        .map(String::from)
-                        .collect::<Vec<String>>()
+                    vec!["id", "tasks", "text"]
                 }
             );
+            assert_eq!(
+                yaml_keys(&value["rules"][1]),
+                if detailed {
+                    vec!["created_at", "id", "tasks", "text", "updated_at"]
+                } else {
+                    vec!["id", "tasks", "text"]
+                }
+            );
+            assert_eq!(
+                yaml_keys(&value["rules"][1]["tasks"][0]),
+                if detailed {
+                    vec!["created_at", "id", "text"]
+                } else {
+                    vec!["id", "text"]
+                }
+            );
+            if detailed {
+                assert_eq!(value["rules"][1]["updated_at"], 12);
+            } else {
+                assert!(value["rules"][1].get("updated_at").is_none());
+            }
+            assert!(value["rules"][0].get("updated_at").is_none());
+            assert!(value["rules"][1]["tasks"][0].get("updated_at").is_none());
         }
-        assert!(
-            !render("list", list_body, OutputFormat::Json, false)
-                .unwrap()
-                .contains("entity")
-        );
+        for detailed in [false, true] {
+            let json: Value = serde_json::from_str(
+                &render("list", list_body, OutputFormat::Json, detailed).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(json["rules"][0]["tasks"], serde_json::json!([]));
+            assert!(json["rules"][0].get("updated_at").is_none());
+            assert!(json["rules"][1]["tasks"][0].get("updated_at").is_none());
+            if !detailed {
+                assert!(json["rules"][0].get("created_at").is_none());
+                assert!(json["rules"][1]["tasks"][0].get("created_at").is_none());
+            }
+            let encoded = json.to_string();
+            assert!(!encoded.contains("records"));
+            assert!(!encoded.contains("entity"));
+            assert!(!encoded.contains("type"));
+        }
 
         for (name, body, expected) in [
             (
