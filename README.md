@@ -60,7 +60,7 @@ No internal updater. To update: `npm install -g github:edlugora96/infraware#<new
 
 ### CLI (SQLite semantic-search verbs)
 
-The six verbs are `ingest`, `query`, `list`, `get`, `patch`, and `remove`. They use `<project>/.infraware/vec-index.sqlite`.
+The seven verbs are `ingest`, `query`, `list`, `get`, `patch`, `remove`, and `status`. They use `<project>/.infraware/vec-index.sqlite`.
 
 - `ingest <TASK_TEXT> <RULE_TEXT>` stores one task and its paired historical rule. It embeds both raw texts independently, reuses nearby canonical task and rule rows, and returns `task_id`, `rule_id`, `created_at`, and `duplicate` after commit.
 - The v2 store has no user metadata or metadata filters. `list [LIMIT] [OFFSET] [--entity rules|tasks|all]`, `get <ID> [--entity rules|tasks]`, and `patch <ID> --text <TEXT> [--entity rules|tasks]` select the entity explicitly. The selector defaults to `rules` for all three commands; `all` is valid only for `list`. `list` returns `total`, `limit`, `offset`, and `records`, while each record and `get` response contains only `id`, `text`, and epoch-millisecond `created_at`.
@@ -72,7 +72,8 @@ The six verbs are `ingest`, `query`, `list`, `get`, `patch`, and `remove`. They 
   infraware get 3 --entity tasks
   infraware patch 3 --text "new task" --entity tasks
   ```
-- Only ingest creates a missing store, and it creates a fresh schema with informational `schema_version=1`. Other verbs require an existing compatible store and never migrate or repair it.
+- Only ingest creates a missing store, and it creates a fresh schema with informational `schema_version=1`. The fresh schema includes nullable `updated_at` columns on tasks and rules. Other verbs require an existing usable store created with this schema. A store missing either column is unsupported, and the application does not migrate or repair it.
+- `status` reads tasks and rules without changing the store. It reports compact JSON with `all_up_to_date`, `window_days`, `stale_tasks`, and `stale_rules`. Each stale entry contains only `id`, `text`, and `last_revised_at`, an epoch-millisecond timestamp. `last_revised_at` uses `updated_at` when present and `created_at` otherwise. A record is stale only when that timestamp is older than the configured window. Status does not create an index or settings file.
 - `query <TASK_TEXT>` searches historical task embeddings, follows task/rule pair relations, and returns nearest tasks first.
 - Failed SQLite writes roll back. Usage and validation failures exit 2 with empty stdout. Store and operational failures exit 1 with empty stdout and one `error:` line on stderr.
 
@@ -85,10 +86,11 @@ distances:
   task_dedup: 0.15
   rule_dedup: 0.15
   query_max: 0.15
+staleness_threshold_days: 14
 ```
 
-The three keys are independent. Each defaults to `0.15` when it is missing or set to `null`. A missing file, empty or whitespace-only file, null YAML document, missing `distances` section, or null section also uses those defaults. Unknown keys are ignored at every supported level.
+The three distance keys are independent. Each defaults to `0.15` when it is missing or set to `null`. `staleness_threshold_days` is an optional top-level setting. It defaults to `14` days when it is missing or set to `null`. A missing file, empty or whitespace-only file, null YAML document, missing `distances` section, or null section also uses the distance defaults. Unknown keys are ignored at every supported level.
 
-Configured values must be finite numbers in the inclusive range `[0, 2]`. Malformed YAML, wrong-shaped roots or sections, invalid leaf types, non-finite values, and values outside that range produce an operational configuration error.
+Configured distance values must be finite numbers in the inclusive range `[0, 2]`. A configured staleness window must be a finite, non-negative number of days. Malformed YAML, wrong-shaped roots or sections, invalid leaf types, non-finite values, and values outside those ranges produce an operational configuration error.
 
-`ingest` loads the settings for task and rule deduplication, `patch` loads them for task collision checks, and `query` loads `query_max` for both filtering and the response envelope. `list`, `get`, and `remove` do not load this file. Without settings, threshold behavior remains the existing `0.15` behavior. Settings do not change the CLI verbs, SQLite storage schema, stored vectors, or no-network behavior.
+`ingest` loads the settings for task and rule deduplication, `patch` loads them for task collision checks, and `query` loads `query_max` for both filtering and the response envelope. `status` loads `staleness_threshold_days`; `list`, `get`, and `remove` do not load this file. Without settings, distance behavior remains the existing `0.15` behavior and status uses a 14-day window. Settings do not change the CLI verbs, stored vectors, or no-network behavior.
