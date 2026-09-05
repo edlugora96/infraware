@@ -3,8 +3,8 @@
 //! The legacy `analyze` verb (with `--format`/`--suggest`/`--details`) no
 //! longer exists: the CLI accepts exactly the six SQLite-backed verbs
 //! (`ingest`, `query`, `list`, `get`, `patch`, `remove`). The analyzer
-//! module, its fixtures, and its format-parity coverage are deleted with
-//! the Markdown path (later tasks); this file keeps the test target
+//! module, its fixtures, and its format-parity coverage are deleted; this
+//! file keeps the test target
 //! compiling and pins the removal contract: every `analyze` shape exits
 //! usage status 2 with empty stdout.
 //!

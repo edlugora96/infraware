@@ -87,7 +87,8 @@ fn exec_in(
 fn ingest_model_failure_is_redacted_status_1() {
     let root = TempRoot::new();
     let cache_home = root.poisoned_cache_home();
-    let (code, stdout, stderr) = exec_in(&root.path, Some(&cache_home), &["ingest", "hello"]);
+    let (code, stdout, stderr) =
+        exec_in(&root.path, Some(&cache_home), &["ingest", "hello", "query"]);
     assert_eq!(
         code,
         Some(EXIT_FAILURE as i32),
@@ -98,10 +99,8 @@ fn ingest_model_failure_is_redacted_status_1() {
         stderr, "error: i/o error: ingest failed\n",
         "exactly one redacted line, got: {stderr:?}"
     );
-    // Storage ran first (index created at the exact path), so the failure
-    // is proven to come from the model stage, not the storage path.
-    assert!(root.path.join(".infraware/vec-index.sqlite").is_file());
-    // Belt-and-braces leak scan: no paths, URLs, cache details, or vectors.
+    // The model stage runs before storage, so this failure need not create an index.
+    // The diagnostic must not expose user data or implementation details.
     let temp = root.path.to_string_lossy().into_owned();
     for leaked in [
         temp,
@@ -116,6 +115,8 @@ fn ingest_model_failure_is_redacted_status_1() {
         "dimension".to_string(),
         "cosine".to_string(),
         "SELECT".to_string(),
+        "hello".to_string(),
+        "query".to_string(),
     ] {
         assert!(
             !stderr.contains(&leaked),
@@ -127,7 +128,7 @@ fn ingest_model_failure_is_redacted_status_1() {
 #[test]
 fn ingest_blank_text_is_usage_with_empty_stdout() {
     let root = TempRoot::new();
-    let (code, stdout, stderr) = exec_in(&root.path, None, &["ingest", "   "]);
+    let (code, stdout, stderr) = exec_in(&root.path, None, &["ingest", "   ", "query"]);
     assert_eq!(
         code,
         Some(EXIT_USAGE as i32),

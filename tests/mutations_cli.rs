@@ -181,7 +181,7 @@ fn patch_non_integer_id_is_usage() {
     let cwd = TempCwd::new();
     assert_usage_rejected(&cwd, &["patch", "abc", "--text", "x"]);
     assert_usage_rejected(&cwd, &["patch", "0", "--text", "x"]);
-    assert_usage_rejected(&cwd, &["patch", "-2", "--metadata", "{}"]);
+    assert_usage_rejected(&cwd, &["patch", "-2", "--text", "x"]);
 }
 
 #[test]
@@ -189,10 +189,6 @@ fn patch_unknown_and_duplicate_flags_are_usage() {
     let cwd = TempCwd::new();
     assert_usage_rejected(&cwd, &["patch", "1", "--merge", "x"]);
     assert_usage_rejected(&cwd, &["patch", "1", "--text", "a", "--text", "b"]);
-    assert_usage_rejected(
-        &cwd,
-        &["patch", "1", "--metadata", "{}", "--metadata", "{}"],
-    );
     assert_usage_rejected(&cwd, &["patch", "1", "--text"]);
     assert_usage_rejected(&cwd, &["patch", "1", "--metadata"]);
     assert_usage_rejected(&cwd, &["patch", "1", "extra", "--text", "x"]);
@@ -201,17 +197,14 @@ fn patch_unknown_and_duplicate_flags_are_usage() {
 #[test]
 fn patch_invalid_payload_is_usage() {
     let cwd = TempCwd::new();
-    // Whitespace-only text, malformed metadata, and non-flat metadata are
-    // usage errors raised before any storage work.
+    // Whitespace-only text is rejected before storage work.
     assert_usage_rejected(&cwd, &["patch", "1", "--text", "   "]);
-    assert_usage_rejected(&cwd, &["patch", "1", "--metadata", "{bad}"]);
-    assert_usage_rejected(&cwd, &["patch", "1", "--metadata", r#"{"a":1}"#]);
+    assert_usage_rejected(&cwd, &["patch", "1", "--metadata", "{}"]);
 }
 
 #[test]
 fn patch_on_missing_storage_is_operational() {
     let cwd = TempCwd::new();
     assert_operational_rejected(&cwd, &["patch", "1", "--text", "hello"]);
-    assert_operational_rejected(&cwd, &["patch", "1", "--metadata", r#"{"a":"1"}"#]);
     cwd.assert_no_artifacts();
 }

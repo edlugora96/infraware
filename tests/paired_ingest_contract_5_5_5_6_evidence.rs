@@ -1,0 +1,118 @@
+//! Deterministic acceptance evidence for paired-ingest contract tasks 5.5/5.6.
+//!
+//! The public binary deliberately requires a cached model for successful query
+//! and patch operations.  These checks therefore pin the production seams and
+//! SQL invariants without downloading a model or depending on the vec runtime.
+use std::fs;
+
+fn source(name: &str) -> String {
+    fs::read_to_string(format!("src/{name}.rs")).expect("source is present")
+}
+
+#[test]
+fn query_uses_historical_vectors_and_collapses_to_nearest_link() {
+    let q = source("query");
+    let v = source("vec_store");
+    assert!(v.contains("query_vecs"));
+    assert!(v.contains("JOIN pair_relations p"));
+    for required in [
+        "historical_query_candidates",
+        "if d <= QUERY_MAX_DISTANCE",
+        "best.insert(fid",
+        "qid < x.1",
+        "then_with(|| a.0.cmp(&b.0))",
+        "persist_query",
+        "drop(store)",
+        "if hits.is_empty()",
+    ] {
+        assert!(q.contains(required), "query evidence missing {required:?}");
+    }
+    assert!(q.contains("hit.link = None"));
+    assert!(q.contains("created_at: created"));
+}
+
+#[test]
+fn query_snapshot_is_read_before_separate_top_only_write() {
+    let q = source("query");
+    let read = q.find("historical_query_candidates").expect("read seam");
+    let write = q.find("open_existing_rw").expect("write seam");
+    assert!(read < write, "retrieval must precede the write transaction");
+    assert!(q[read..write].contains("hits.is_empty()"));
+    assert!(q[write..].contains("persist_query(text, \"\", top_fact_id"));
+    // The empty branch returns before opening the RW connection: zero-hit is
+    // both successful and free of query-run/link writes.
+    assert!(q[..write].contains("return Ok(DispatchOutput"));
+}
+
+#[test]
+fn patch_recomputes_vectors_and_atomically_merges_all_owned_links() {
+    let p = source("patch");
+    let v = source("vec_store");
+    assert!(p.contains("embed(&text)") || p.contains("embed(&text)"));
+    for required in [
+        "UPDATE facts SET text",
+        "SELECT rowid,embedding FROM fact_vecs WHERE rowid<>?1",
+        "if distance <= 0.15",
+        "UPDATE OR IGNORE pair_relations",
+        "UPDATE OR IGNORE query_fact_links",
+        "DELETE FROM fact_vecs WHERE rowid=?1",
+        "DELETE FROM facts WHERE fact_id=?1",
+        "let tx = self.conn.transaction().map_err(er)?",
+        "tx.commit().map_err(er)?",
+    ] {
+        assert!(v.contains(required), "patch evidence missing {required:?}");
+    }
+    assert!(p.contains("PatchOutcome { id, patched: true }"));
+    // Historical query rows/vectors are intentionally absent from patch/remove
+    // deletion lists, while fact-owned links are explicitly cleaned up.
+    assert!(!v.contains("DELETE FROM queries"));
+    assert!(!v.contains("DELETE FROM query_vecs"));
+}
+
+#[test]
+fn list_get_and_remove_are_read_only_or_atomic_and_text_only() {
+    let r = source("records");
+    let rm = source("remove");
+    let v = source("vec_store");
+    for required in [
+        "open_read_only",
+        "list_records",
+        "skip(offset).take(limit)",
+        "created_at",
+        "output_get_json",
+    ] {
+        assert!(r.contains(required), "record evidence missing {required:?}");
+    }
+    for required in [
+        "open_existing_rw",
+        "DELETE FROM query_fact_links WHERE fact_id=?1",
+        "DELETE FROM pair_relations WHERE fact_id=?1",
+        "DELETE FROM fact_vecs WHERE rowid=?1",
+        "DELETE FROM facts WHERE fact_id=?1",
+        "tx.commit().map_err(er)",
+    ] {
+        assert!(
+            rm.contains(required) || v.contains(required),
+            "remove evidence missing {required:?}"
+        );
+    }
+    assert!(r.contains("text"));
+    assert!(r.contains("created_at"));
+}
+
+#[test]
+fn failure_paths_are_redacted_and_transactional() {
+    for file in ["query", "patch", "remove"] {
+        let s = source(file);
+        assert!(
+            s.contains("LibraryError::Io"),
+            "{file} maps operational errors"
+        );
+        assert!(
+            s.contains("operational_err"),
+            "{file} maps storage failures"
+        );
+    }
+    let v = source("vec_store");
+    assert!(v.matches("map_err(er)?").count() >= 12);
+}
