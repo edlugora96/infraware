@@ -86,7 +86,7 @@ impl SqliteStore {
     }
     fn init(&mut self) -> Result<(), LibraryError> {
         let tx = self.conn.transaction().map_err(er)?;
-        tx.execute_batch("PRAGMA foreign_keys=ON;CREATE TABLE facts(fact_id INTEGER PRIMARY KEY AUTOINCREMENT,text TEXT NOT NULL,created_at INTEGER NOT NULL);CREATE TABLE queries(query_id INTEGER PRIMARY KEY AUTOINCREMENT,text TEXT NOT NULL,created_at INTEGER NOT NULL);CREATE VIRTUAL TABLE fact_vecs USING vec0(embedding float[384] distance_metric=cosine);CREATE VIRTUAL TABLE query_vecs USING vec0(embedding float[384] distance_metric=cosine);CREATE TABLE pair_relations(fact_id INTEGER REFERENCES facts(fact_id),query_id INTEGER REFERENCES queries(query_id),created_at INTEGER,PRIMARY KEY(fact_id,query_id));CREATE TABLE query_runs(id INTEGER PRIMARY KEY AUTOINCREMENT,text TEXT,created_at INTEGER);CREATE TABLE query_fact_links(query_run_id INTEGER,fact_id INTEGER REFERENCES facts(fact_id),query_id INTEGER REFERENCES queries(query_id),created_at INTEGER,PRIMARY KEY(query_run_id,fact_id));CREATE TABLE model_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);").map_err(er)?;
+        tx.execute_batch("PRAGMA foreign_keys=ON;CREATE TABLE facts(fact_id INTEGER PRIMARY KEY AUTOINCREMENT,text TEXT NOT NULL,created_at INTEGER NOT NULL);CREATE TABLE queries(query_id INTEGER PRIMARY KEY AUTOINCREMENT,text TEXT NOT NULL,created_at INTEGER NOT NULL);CREATE VIRTUAL TABLE fact_vecs USING vec0(embedding float[384] distance_metric=cosine);CREATE VIRTUAL TABLE query_vecs USING vec0(embedding float[384] distance_metric=cosine);CREATE TABLE pair_relations(fact_id INTEGER REFERENCES facts(fact_id),query_id INTEGER REFERENCES queries(query_id),created_at INTEGER,PRIMARY KEY(fact_id,query_id));CREATE TABLE model_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);").map_err(er)?;
         for (k, v) in [
             ("schema_version", "2"),
             ("model", INGEST_MODEL),
@@ -105,27 +105,46 @@ impl SqliteStore {
         tx.commit().map_err(er)
     }
     pub(crate) fn verify_query_compatible(&self) -> Result<(), LibraryError> {
-        for t in [
+        let expected = [
             "facts",
             "queries",
             "fact_vecs",
             "query_vecs",
             "pair_relations",
-            "query_runs",
-            "query_fact_links",
             "model_meta",
-        ] {
-            if self
-                .conn
-                .query_row("SELECT 1 FROM sqlite_master WHERE name=?1", [t], |r| {
-                    r.get::<_, i64>(0)
-                })
-                .optional()
-                .map_err(er)?
-                .is_none()
-            {
+        ];
+        let tables = self
+            .conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .map_err(er)?
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(er)?
+            .map(|row| row.map_err(er))
+            .collect::<Result<Vec<_>, _>>()?;
+        for table in &tables {
+            let canonical = expected.iter().any(|name| name == table);
+            let sqlite_sequence = table == "sqlite_sequence";
+            let vec_shadow = ["fact_vecs", "query_vecs"].iter().any(|prefix| {
+                [
+                    "_chunks",
+                    "_rowids",
+                    "_vector_chunks00",
+                    "_info",
+                    "_metadata",
+                    "_partition",
+                ]
+                .iter()
+                .any(|suffix| table == &format!("{prefix}{suffix}"))
+            });
+            if !canonical && !sqlite_sequence && !vec_shadow {
                 return Err(er("index incompatible"));
             }
+        }
+        if expected
+            .iter()
+            .any(|name| !tables.iter().any(|table| table == name))
+        {
+            return Err(er("index incompatible"));
         }
         for t in ["fact_vecs", "query_vecs"] {
             let s: String = self
@@ -257,6 +276,56 @@ impl SqliteStore {
             )
             .map_err(er)
     }
+    pub(crate) fn insert_query_for_fact(
+        &mut self,
+        fact_id: i64,
+        query_text: &str,
+        query_embedding: &[f32],
+    ) -> Result<(), LibraryError> {
+        let tx = self.conn.transaction().map_err(er)?;
+        let t = now();
+        let mut st = tx
+            .prepare("SELECT rowid,embedding FROM query_vecs")
+            .map_err(er)?;
+        let mut nearest = None;
+        let rows = st
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
+            .map_err(er)?;
+        for row in rows {
+            let (id, bytes) = row.map_err(er)?;
+            let d = crate::query::cosine_distance(query_embedding, &dec(&bytes)?);
+            if d <= 0.15
+                && nearest
+                    .as_ref()
+                    .is_none_or(|(best, best_id)| (d, id) < (*best, *best_id))
+            {
+                nearest = Some((d, id));
+            }
+        }
+        drop(st);
+        let query_id = if let Some((_, id)) = nearest {
+            id
+        } else {
+            tx.execute(
+                "INSERT INTO queries(text,created_at)VALUES(?1,?2)",
+                rusqlite::params![query_text, t],
+            )
+            .map_err(er)?;
+            let id = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO query_vecs(rowid,embedding)VALUES(?1,?2)",
+                rusqlite::params![id, enc(query_embedding)],
+            )
+            .map_err(er)?;
+            id
+        };
+        tx.execute(
+            "INSERT OR IGNORE INTO pair_relations VALUES(?1,?2,?3)",
+            rusqlite::params![fact_id, query_id, t],
+        )
+        .map_err(er)?;
+        tx.commit().map_err(er)
+    }
     pub(crate) fn created_at(&self, id: i64) -> Result<i64, LibraryError> {
         self.conn
             .query_row("SELECT created_at FROM facts WHERE fact_id=?1", [id], |r| {
@@ -282,8 +351,6 @@ impl SqliteStore {
     }
     pub(crate) fn remove_record(&mut self, id: i64) -> Result<(), LibraryError> {
         let tx = self.conn.transaction().map_err(er)?;
-        tx.execute("DELETE FROM query_fact_links WHERE fact_id=?1", [id])
-            .map_err(er)?;
         tx.execute("DELETE FROM pair_relations WHERE fact_id=?1", [id])
             .map_err(er)?;
         tx.execute("DELETE FROM fact_vecs WHERE rowid=?1", [id])
@@ -340,14 +407,7 @@ impl SqliteStore {
                     rusqlite::params![canonical, id],
                 )
                 .map_err(er)?;
-                tx.execute(
-                    "UPDATE OR IGNORE query_fact_links SET fact_id=?1 WHERE fact_id=?2",
-                    rusqlite::params![canonical, id],
-                )
-                .map_err(er)?;
                 tx.execute("DELETE FROM pair_relations WHERE fact_id=?1", [id])
-                    .map_err(er)?;
-                tx.execute("DELETE FROM query_fact_links WHERE fact_id=?1", [id])
                     .map_err(er)?;
                 tx.execute("DELETE FROM fact_vecs WHERE rowid=?1", [id])
                     .map_err(er)?;
@@ -401,39 +461,6 @@ impl SqliteStore {
             Ok(QueryCandidateRow(q, f, c, dec(&b)?, t))
         })
         .collect()
-    }
-    pub(crate) fn persist_query(
-        &mut self,
-        text: &str,
-        _: &str,
-        f: i64,
-        c: i64,
-    ) -> Result<crate::query::Link, LibraryError> {
-        let tx = self.conn.transaction().map_err(er)?;
-        tx.execute(
-            "INSERT INTO query_runs(text,created_at)VALUES(?1,?2)",
-            rusqlite::params![text, c],
-        )
-        .map_err(er)?;
-        let r = tx.last_insert_rowid();
-        let (q, pc): (i64, i64) = tx
-            .query_row(
-                "SELECT query_id,created_at FROM pair_relations WHERE fact_id=?1 LIMIT 1",
-                [f],
-                |x| Ok((x.get(0)?, x.get(1)?)),
-            )
-            .map_err(er)?;
-        tx.execute(
-            "INSERT INTO query_fact_links VALUES(?1,?2,?3,?4)",
-            rusqlite::params![r, f, q, c],
-        )
-        .map_err(er)?;
-        tx.commit().map_err(er)?;
-        Ok(crate::query::Link {
-            fact_id: f,
-            query_id: q,
-            created_at: pc,
-        })
     }
 }
 impl HashStore for SqliteStore {

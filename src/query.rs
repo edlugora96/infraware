@@ -17,8 +17,7 @@ pub(crate) const QUERY_MAX_DISTANCE: f64 = 0.15;
 
 /// Single ranked hit in the success envelope.
 ///
-/// Field declaration order is the serialization order:
-/// `id`, `score`, `distance`, `metadata`, `text`, `link`.
+/// Field declaration order is the serialization order: `id`, `score`, `distance`, `text`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct QueryHit {
     pub(crate) id: i64,
@@ -27,31 +26,11 @@ pub(crate) struct QueryHit {
     #[serde(skip_serializing)]
     pub(crate) metadata: BTreeMap<String, String>,
     pub(crate) text: String,
-    /// Link only present on the top hit (hit index 0). Derived from the
-    /// top result's ID and its stored relation: `{fact_id, query_id,
-    /// created_at}`. Omitted for hits 1..n and for zero-hit results.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) link: Option<Link>,
-}
-
-/// The link object carried on the top hit only.
-///
-/// `{fact_id, query_id, created_at}` — fact_id is the record id of the
-/// top result, query_id identifies the associated query, and created_at
-/// is the fact's creation timestamp. Omitted when there are no hits.
-// Dormant until tasks 3.2/5.x: top-hit link attachment constructs this.
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub(crate) struct Link {
-    pub(crate) fact_id: i64,
-    pub(crate) query_id: i64,
-    pub(crate) created_at: i64,
 }
 
 /// Success envelope for `query`.
 ///
-/// Field declaration order is the serialization order:
-/// `query`, `filter`, `max_distance`, `hits`.
+/// Field declaration order is the serialization order: `query`, `max_distance`, `hits`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct QueryEnvelope {
     pub(crate) query: String,
@@ -68,9 +47,6 @@ pub(crate) struct QueryEnvelope {
 /// - Compact form only (`serde_json::to_string`); empty `hits` renders `[]`.
 /// - No extra fields or alternate output modes.
 ///
-/// Link is included on the top hit only (hits[0]); hits[1..] have
-/// `link: null` omitted by `skip_serializing_if`. When `hits` is empty
-/// the envelope has no `link` field.
 pub(crate) fn render_envelope(
     query: &str,
     filter: &BTreeMap<String, String>,
@@ -127,7 +103,6 @@ pub(crate) fn rank_candidates(candidates: &[QueryCandidate]) -> Vec<QueryHit> {
             distance: c.distance,
             metadata: c.metadata.clone(),
             text: c.text.clone(),
-            link: None,
         })
         .collect();
     hits.sort_by(|a, b| {
@@ -371,7 +346,6 @@ pub(crate) fn assemble_hits(
             distance,
             metadata,
             text,
-            link: None,
         });
     }
     Ok(hits)
@@ -481,24 +455,16 @@ pub(crate) fn run_with_model_embed(
     }
     let mut ranked: Vec<_> = best.into_iter().collect();
     ranked.sort_by(|a, b| a.1.0.total_cmp(&b.1.0).then_with(|| a.0.cmp(&b.0)));
-    let mut hits = ranked
+    let hits = ranked
         .into_iter()
-        .map(|(fid, (d, qid, created, fact_text))| QueryHit {
+        .map(|(fid, (d, _qid, _created, fact_text))| QueryHit {
             id: fid,
             score: 1.0 - d,
             distance: d,
             metadata: BTreeMap::new(),
             text: fact_text,
-            link: Some(Link {
-                fact_id: fid,
-                query_id: qid,
-                created_at: created,
-            }),
         })
         .collect::<Vec<_>>();
-    for hit in hits.iter_mut().skip(1) {
-        hit.link = None;
-    }
     if hits.is_empty() {
         let body = render_envelope(text, filter, &hits);
         return Ok(DispatchOutput {
@@ -510,20 +476,17 @@ pub(crate) fn run_with_model_embed(
     // Retrieval is complete before opening the separate write connection.
     // The snapshot and its SQL borrows are dropped before the RW transaction.
     let top_fact_id = hits[0].id;
-    let created_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| operational_err())
-        .and_then(|d| i64::try_from(d.as_millis()).map_err(|_| operational_err()))?;
     drop(store);
     let mut rw = match crate::vec_store::SqliteStore::open_existing_rw(root) {
         Ok(store) => store,
         Err(_) => return Err(operational_err()),
     };
-    let link = match rw.persist_query(text, "", top_fact_id, created_at) {
-        Ok(link) => link,
-        Err(_) => return Err(operational_err()),
-    };
-    hits[0].link = Some(link);
+    if rw
+        .insert_query_for_fact(top_fact_id, text, &query_embedding)
+        .is_err()
+    {
+        return Err(operational_err());
+    }
     let body = render_envelope(text, filter, &hits);
     Ok(DispatchOutput {
         format: crate::format::OutputFormat::Json,
@@ -827,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_rendering_is_text_only_and_top_link_only() {
+    fn v2_rendering_is_text_only() {
         let scored = vec![
             ScoredRow {
                 id: 2,
@@ -838,19 +801,14 @@ mod tests {
                 distance: 0.10,
             },
         ];
-        let mut hits =
+        let hits =
             assemble_hits(&scored, |id| Ok((BTreeMap::new(), format!("fact-{id}")))).unwrap();
-        hits[0].link = Some(Link {
-            fact_id: 2,
-            query_id: 9,
-            created_at: 100,
-        });
         let value: serde_json::Value =
             serde_json::from_str(&render_envelope("raw query", &BTreeMap::new(), &hits)).unwrap();
         assert_eq!(value.as_object().unwrap().len(), 3);
         assert!(value["hits"][0].get("metadata").is_none());
+        assert!(value["hits"][0].get("link").is_none());
         assert!(value["hits"][1].get("link").is_none());
-        assert_eq!(value["hits"][0]["link"]["query_id"], 9);
     }
 
     #[test]
@@ -1722,7 +1680,7 @@ mod tests {
             .split("fn historical_query_candidates")
             .nth(1)
             .expect("historical query candidate reader must exist")
-            .split("pub(crate) fn persist_query")
+            .split("impl HashStore")
             .next()
             .unwrap_or("");
         assert!(
