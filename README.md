@@ -74,7 +74,7 @@ The seven verbs are `ingest`, `query`, `list`, `get`, `patch`, `remove`, and `st
   ```
 - Only ingest creates a missing store, and it creates a fresh schema with informational `schema_version=1`. The fresh schema includes nullable `updated_at` columns on tasks and rules. Other verbs require an existing usable store created with this schema. A store missing either column is unsupported, and the application does not migrate or repair it.
 - `status` reads tasks and rules without changing the store. It reports compact JSON with `all_up_to_date`, `window_days`, `stale_tasks`, and `stale_rules`. Each stale entry contains only `id`, `text`, and `last_revised_at`, an epoch-millisecond timestamp. `last_revised_at` uses `updated_at` when present and `created_at` otherwise. A record is stale only when that timestamp is older than the configured window. Status does not create an index or settings file.
-- `query <TASK_TEXT>` searches historical task embeddings, follows task/rule pair relations, and returns nearest tasks first.
+- `query <TASK_TEXT>` searches historical task embeddings, follows task/rule pair relations, and returns nearest tasks first. Query auto-ingest is disabled by default, so a query does not write to the index unless `query_auto_ingest: true` is set.
 - Failed SQLite writes roll back. Usage and validation failures exit 2 with empty stdout. Store and operational failures exit 1 with empty stdout and one `error:` line on stderr.
 
 ### Repository distance settings
@@ -86,11 +86,12 @@ distances:
   task_dedup: 0.15
   rule_dedup: 0.15
   query_max: 0.15
+query_auto_ingest: false
 staleness_threshold_days: 14
 ```
 
-The three distance keys are independent. Each defaults to `0.15` when it is missing or set to `null`. `staleness_threshold_days` is an optional top-level setting. It defaults to `14` days when it is missing or set to `null`. A missing file, empty or whitespace-only file, null YAML document, missing `distances` section, or null section also uses the distance defaults. Unknown keys are ignored at every supported level.
+The three distance keys are independent. Each defaults to `0.15` when it is missing or set to `null`. `staleness_threshold_days` is an optional top-level setting. It defaults to `14` days when it is missing or set to `null`. `query_auto_ingest` is an optional top-level boolean that defaults to `false`; set it to `true` to enable query write-back. A missing file, empty or whitespace-only file, null YAML document, missing `distances` section, or null section also uses the distance defaults. Unknown keys are ignored at every supported level.
 
 Configured distance values must be finite numbers in the inclusive range `[0, 2]`. A configured staleness window must be a finite, non-negative number of days. Malformed YAML, wrong-shaped roots or sections, invalid leaf types, non-finite values, and values outside those ranges produce an operational configuration error.
 
-`ingest` loads the settings for task and rule deduplication, `patch` loads them for task collision checks, and `query` loads `query_max` for both filtering and the response envelope. `status` loads `staleness_threshold_days`; `list`, `get`, and `remove` do not load this file. Without settings, distance behavior remains the existing `0.15` behavior and status uses a 14-day window. Settings do not change the CLI verbs, stored vectors, or no-network behavior.
+`ingest` loads the settings for task and rule deduplication, `patch` loads them for task collision checks, and `query` loads `query_max` for filtering and the response envelope plus `query_auto_ingest` for optional write-back. `status` loads `staleness_threshold_days`; `list`, `get`, and `remove` do not load this file. Without settings, distance behavior remains the existing `0.15` behavior and status uses a 14-day window. Query write-back used to happen for every non-empty result. It now requires `query_auto_ingest: true`. Settings do not change the CLI verbs, stored vectors, or no-network behavior.
