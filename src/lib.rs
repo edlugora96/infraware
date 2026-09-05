@@ -53,6 +53,12 @@ pub const EXIT_USAGE: u8 = 2;
 /// missing or incompatible store, backend errors).
 pub const EXIT_FAILURE: u8 = 1;
 
+const HELP_TEXT: &str = "Usage: infraware <COMMAND>\n\nCommands:\n  ingest <TASK_TEXT> <RULE_TEXT>\n  query <TASK_TEXT>\n  list [LIMIT] [OFFSET] [--entity rules|tasks|all]\n  get <ID> [--entity rules|tasks]\n  patch <ID> --text <TEXT> [--entity rules|tasks]\n  remove <ID>\n  status\n  revise <ID> --entity rules|tasks";
+
+fn write_help<W: Write>(stdout: &mut W) {
+    let _ = writeln!(stdout, "{HELP_TEXT}");
+}
+
 /// Thin binary adapter: parse argv → build typed [`Command`] → invoke the single
 /// library dispatch boundary → write structured output to `stdout` and
 /// diagnostics to `stderr` → return the process [`ExitCode`].
@@ -67,6 +73,15 @@ where
     W2: Write,
 {
     let argv: Vec<String> = args.into_iter().collect();
+
+    if argv.is_empty() || (argv.len() == 1 && argv[0] == "--help") {
+        write_help(stdout);
+        return 0;
+    }
+    if argv.len() == 1 && argv[0] == "--version" {
+        let _ = writeln!(stdout, "infraware {}", env!("CARGO_PKG_VERSION"));
+        return 0;
+    }
 
     // Stage 1: parse. Usage errors short-circuit to the usage status.
     let command = match parse_args(&argv) {
