@@ -29,6 +29,8 @@ mod query;
 mod records;
 mod remove;
 mod settings;
+mod staleness;
+mod status;
 mod vec_shim;
 mod vec_store;
 

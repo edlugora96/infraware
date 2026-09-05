@@ -25,6 +25,15 @@ pub fn parse_args(argv: &[String]) -> Result<Command, LibraryError> {
     };
 
     match command_token.as_str() {
+        "status" => {
+            if iter.next().is_some() {
+                Err(LibraryError::InvalidInput {
+                    message: "status takes no arguments".into(),
+                })
+            } else {
+                Ok(Command::Status)
+            }
+        }
         "ingest" => parse_ingest(&mut iter),
         "query" => parse_query(&mut iter),
         "list" => parse_list(&mut iter),

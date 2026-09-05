@@ -39,6 +39,8 @@ pub enum ListEntity {
 /// usage errors before a `Command` is ever built.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    /// `status` - read-only staleness report.
+    Status,
     /// `ingest <TASK_TEXT> <RULE_TEXT>` — SQLite write path.
     Ingest {
         /// Canonical task text, preserved exactly.
@@ -87,6 +89,7 @@ impl Command {
     /// Human-readable command name, used in diagnostics.
     pub fn name(&self) -> &'static str {
         match self {
+            Command::Status => "status",
             Command::Ingest { .. } => "ingest",
             Command::Query { .. } => "query",
             Command::List { .. } => "list",

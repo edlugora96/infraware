@@ -41,6 +41,10 @@ pub struct DispatchOutput {
 /// - `patch`/`remove` mutate through the approved read-write lane.
 pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, LibraryError> {
     match command {
+        Command::Status => {
+            let s = crate::settings::load(root)?;
+            crate::status::run(root, s)
+        }
         Command::Ingest {
             task_text,
             rule_text,
