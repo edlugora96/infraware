@@ -260,6 +260,7 @@ pub(crate) fn run_with_model_embed(
 ) -> Result<DispatchOutput, LibraryError> {
     let store = match crate::vec_store::SqliteStore::open_read_only(root) {
         Ok(store) => store,
+        Err(LibraryError::UninitializedStorage) => return Err(LibraryError::UninitializedStorage),
         Err(_) => return Err(operational_err()),
     };
     if store.verify_query_compatible().is_err() {
@@ -334,6 +335,7 @@ pub(crate) fn run_with_model_embed(
     drop(store);
     let mut rw = match crate::vec_store::SqliteStore::open_existing_rw(root) {
         Ok(store) => store,
+        Err(LibraryError::UninitializedStorage) => return Err(LibraryError::UninitializedStorage),
         Err(_) => return Err(operational_err()),
     };
     if rw

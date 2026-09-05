@@ -12,7 +12,11 @@ pub(crate) fn run(root: &Path, settings: Settings) -> Result<DispatchOutput, Lib
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| err())?
         .as_millis() as i64;
-    let mut store = crate::vec_store::SqliteStore::open_read_only(root).map_err(|_| err())?;
+    let mut store = match crate::vec_store::SqliteStore::open_read_only(root) {
+        Ok(store) => store,
+        Err(LibraryError::UninitializedStorage) => return Err(LibraryError::UninitializedStorage),
+        Err(_) => return Err(err()),
+    };
     let (tasks, rules) = store.status_rows().map_err(|_| err())?;
     let mut st = Vec::new();
     let mut sr = Vec::new();

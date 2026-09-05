@@ -78,8 +78,23 @@ impl SqliteStore {
         Ok(s)
     }
     pub(crate) fn open_existing_rw(r: &Path) -> Result<Self, LibraryError> {
-        if !path(r).is_file() {
-            return Err(er("index missing"));
+        let store_path = path(r);
+        let metadata = match std::fs::symlink_metadata(&store_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(LibraryError::UninitializedStorage);
+            }
+            Err(_) => return Err(er("index unavailable")),
+        };
+        if metadata.file_type().is_symlink() {
+            if !std::fs::metadata(&store_path)
+                .map(|target| target.is_file())
+                .unwrap_or(false)
+            {
+                return Err(er("index unavailable"));
+            }
+        } else if !metadata.is_file() {
+            return Err(er("index unavailable"));
         }
         crate::vec_shim::ensure_registered();
         let s = Self {
@@ -89,8 +104,13 @@ impl SqliteStore {
         Ok(s)
     }
     pub(crate) fn open_read_only(r: &Path) -> Result<Self, LibraryError> {
-        if !path(r).is_file() {
-            return Err(er("index missing"));
+        match std::fs::symlink_metadata(path(r)) {
+            Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => {}
+            Ok(_) => return Err(er("index unavailable")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(LibraryError::UninitializedStorage);
+            }
+            Err(_) => return Err(er("index unavailable")),
         }
         crate::vec_shim::ensure_registered();
         let s = Self {
@@ -391,8 +411,7 @@ impl SqliteStore {
             .collect::<Result<Vec<_>, _>>()?;
 
         if !rules.is_empty() {
-            let placeholders = std::iter::repeat("?")
-                .take(rules.len())
+            let placeholders = std::iter::repeat_n("?", rules.len())
                 .collect::<Vec<_>>()
                 .join(",");
             let sql = format!(
@@ -676,6 +695,54 @@ mod tests {
                 .as_nanos()
         ))
     }
+    #[test]
+    fn absent_existing_paths_are_typed_and_do_not_create_storage() {
+        let p = root();
+        assert!(matches!(
+            SqliteStore::open_existing_rw(&p),
+            Err(LibraryError::UninitializedStorage)
+        ));
+        assert!(matches!(
+            SqliteStore::open_read_only(&p),
+            Err(LibraryError::UninitializedStorage)
+        ));
+        assert!(!p.join(".infraware").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_store_symlink_stays_generic_and_does_not_create_target() {
+        use std::os::unix::fs::symlink;
+
+        let p = root();
+        std::fs::create_dir_all(p.join(".infraware")).unwrap();
+        let target = p.join("missing.sqlite");
+        symlink(&target, p.join(".infraware/vec-index.sqlite")).unwrap();
+
+        assert!(matches!(
+            SqliteStore::open_existing_rw(&p),
+            Err(LibraryError::Io { .. })
+        ));
+        assert!(!target.exists());
+        let _ = std::fs::remove_dir_all(p);
+    }
+
+    #[test]
+    fn present_malformed_store_stays_generic() {
+        let p = root();
+        std::fs::create_dir_all(p.join(".infraware")).unwrap();
+        std::fs::write(p.join(".infraware/vec-index.sqlite"), b"not sqlite").unwrap();
+        assert!(matches!(
+            SqliteStore::open_existing_rw(&p),
+            Err(LibraryError::Io { .. })
+        ));
+        assert!(matches!(
+            SqliteStore::open_read_only(&p),
+            Err(LibraryError::Io { .. })
+        ));
+        let _ = std::fs::remove_dir_all(p);
+    }
+
     #[test]
     fn fresh_owner_columns_are_nullable() {
         let p = root();

@@ -66,9 +66,10 @@ pub(crate) fn get(
     let id = crate::remove::parse_record_id(id_raw).map_err(|_| LibraryError::InvalidInput {
         message: format!("get requires a positive integer <ID>, found: {id_raw}"),
     })?;
-    // Read-only open: a missing index is operational and creates nothing.
+    // Read-only open never creates storage.
     let store = match crate::vec_store::SqliteStore::open_read_only(root) {
         Ok(store) => store,
+        Err(LibraryError::UninitializedStorage) => return Err(LibraryError::UninitializedStorage),
         Err(_) => return Err(operational_err()),
     };
     let record = read_one(&store, id, entity)?;
@@ -141,9 +142,10 @@ pub(crate) fn list(
     limit: usize,
     offset: usize,
 ) -> Result<DispatchOutput, LibraryError> {
-    // Read-only open: a missing index is operational and creates nothing.
+    // Read-only open never creates storage.
     let store = match crate::vec_store::SqliteStore::open_read_only(root) {
         Ok(store) => store,
+        Err(LibraryError::UninitializedStorage) => return Err(LibraryError::UninitializedStorage),
         Err(_) => return Err(operational_err()),
     };
     let mut store = store;

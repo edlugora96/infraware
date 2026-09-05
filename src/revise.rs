@@ -16,10 +16,15 @@ pub(crate) fn run(
     let id = crate::remove::parse_record_id(id_raw).map_err(|_| LibraryError::InvalidInput {
         message: format!("revise requires a positive integer <ID>, found: {id_raw}"),
     })?;
-    let mut store =
-        crate::vec_store::SqliteStore::open_existing_rw(root).map_err(|_| LibraryError::Io {
-            message: "revise failed".into(),
-        })?;
+    let mut store = match crate::vec_store::SqliteStore::open_existing_rw(root) {
+        Ok(store) => store,
+        Err(LibraryError::UninitializedStorage) => return Err(LibraryError::UninitializedStorage),
+        Err(_) => {
+            return Err(LibraryError::Io {
+                message: "revise failed".into(),
+            });
+        }
+    };
     store.revise(entity, id)?;
     Ok(DispatchOutput {
         format: OutputFormat::Json,

@@ -58,6 +58,7 @@ pub(crate) fn run(root: &Path, id_raw: &str) -> Result<DispatchOutput, LibraryEr
     // Never creates storage: missing index is the generic operational error.
     let mut store = match crate::vec_store::SqliteStore::open_existing_rw(root) {
         Ok(store) => store,
+        Err(LibraryError::UninitializedStorage) => return Err(LibraryError::UninitializedStorage),
         Err(_) => return Err(operational_err()),
     };
     match store.remove_record(id) {
@@ -131,11 +132,10 @@ mod tests {
     }
 
     #[test]
-    fn remove_missing_storage_is_operational_and_creates_nothing() {
+    fn remove_missing_storage_is_typed_and_creates_nothing() {
         let root = tmp_root();
         let err = run(&root, "1").unwrap_err();
-        assert!(!err.is_usage());
-        assert_eq!(err, operational_err());
+        assert_eq!(err, LibraryError::UninitializedStorage);
         assert!(
             !root.join(".infraware").exists(),
             "remove must not create storage"

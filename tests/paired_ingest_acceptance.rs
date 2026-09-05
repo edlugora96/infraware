@@ -47,7 +47,6 @@ fn lifecycle_is_create_only_for_ingest_and_reads_use_existing_gates() {
     assert!(s.contains("let fresh = !path(r).exists();"));
     assert!(s.contains("if fresh {\n            s.init()?;\n        }"));
     assert!(s.contains("open_with_flags(\n                path(r),\n                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY"));
-    assert!(s.contains("if !path(r).is_file() {\n            return Err(er(\"index missing\"));"));
 }
 
 #[test]

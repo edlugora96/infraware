@@ -155,19 +155,44 @@ fn list_missing_and_incompatible_stores_fail_read_only() {
     assert!(stdout.is_empty());
     assert_eq!(stderr.lines().count(), 1);
     assert!(stderr.starts_with("error:"));
+    assert!(!stderr.contains("infraware ingest"));
     assert_eq!(fs::read(&db).unwrap(), before);
     let _ = fs::remove_dir_all(incompatible);
 }
 
 #[test]
-fn list_and_get_missing_store_fail_closed() {
+fn corrupt_store_stays_generic_and_unchanged() {
     let p = root();
-    for a in [&["list"][..], &["get", "1"][..], &["status"][..]] {
+    let db = p.join(".infraware/vec-index.sqlite");
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    fs::write(&db, b"not sqlite").unwrap();
+    let before = fs::read(&db).unwrap();
+    let (status, stdout, stderr) = exec(&p, &["status"]);
+    assert_eq!(status, EXIT_FAILURE);
+    assert!(stdout.is_empty());
+    assert_eq!(stderr, "error: i/o error: store unavailable\n");
+    assert!(!stderr.contains("infraware ingest"));
+    assert_eq!(fs::read(&db).unwrap(), before);
+    let _ = fs::remove_dir_all(p);
+}
+
+#[test]
+fn all_non_ingest_verbs_report_typed_missing_storage() {
+    let p = root();
+    let hint = "error: canonical storage is not initialized; run `infraware ingest <TASK_TEXT> <RULE_TEXT>` first\n";
+    for a in [
+        &["query", "task"][..],
+        &["list"][..],
+        &["get", "1"][..],
+        &["patch", "1", "--text", "changed"][..],
+        &["remove", "1"][..],
+        &["status"][..],
+        &["revise", "1", "--entity", "rules"][..],
+    ] {
         let (s, o, e) = exec(&p, a);
-        assert_eq!(s, EXIT_FAILURE);
-        assert!(o.is_empty());
-        assert_eq!(e.lines().count(), 1);
-        assert!(e.starts_with("error:"));
+        assert_eq!(s, EXIT_FAILURE, "{a:?}");
+        assert!(o.is_empty(), "{a:?}");
+        assert_eq!(e, hint, "{a:?}");
     }
     assert!(!p.join(".infraware").exists());
     let _ = std::fs::remove_dir_all(p);

@@ -170,6 +170,7 @@ pub(crate) fn run(
     };
     let mut store = match crate::vec_store::SqliteStore::open_existing_rw(root) {
         Ok(store) => store,
+        Err(LibraryError::UninitializedStorage) => return Err(LibraryError::UninitializedStorage),
         Err(_) => return Err(operational_err()),
     };
     let outcome = execute_patch(

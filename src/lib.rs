@@ -122,7 +122,14 @@ where
         }
         Err(error) => {
             // Diagnostics → stderr only. No structured output is written.
-            let _ = writeln!(stderr, "error: {error}");
+            if matches!(&error, LibraryError::UninitializedStorage) {
+                let _ = writeln!(
+                    stderr,
+                    "error: canonical storage is not initialized; run `infraware ingest <TASK_TEXT> <RULE_TEXT>` first"
+                );
+            } else {
+                let _ = writeln!(stderr, "error: {error}");
+            }
             if error.is_usage() {
                 EXIT_USAGE
             } else {
