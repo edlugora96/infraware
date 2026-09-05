@@ -90,6 +90,7 @@ pub(crate) fn run(
     root: &std::path::Path,
     task_text: &str,
     rule_text: &str,
+    settings: crate::settings::Settings,
 ) -> Result<DispatchOutput, LibraryError> {
     if task_text.trim().is_empty() || rule_text.trim().is_empty() {
         return Err(LibraryError::InvalidInput {
@@ -101,8 +102,14 @@ pub(crate) fn run(
     let fv = embedder.embed(task_text).map_err(|_| operational_err())?;
     let qv = embedder.embed(rule_text).map_err(|_| operational_err())?;
     let mut store = crate::vec_store::SqliteStore::open(root)?;
-    let (task_id, rule_id, created_at, duplicate) =
-        store.insert_pair(task_text, rule_text, &fv, &qv)?;
+    let (task_id, rule_id, created_at, duplicate) = store.insert_pair(
+        task_text,
+        rule_text,
+        &fv,
+        &qv,
+        settings.task_dedup,
+        settings.rule_dedup,
+    )?;
     let out = IngestOutput {
         task_id,
         rule_id,
@@ -152,7 +159,7 @@ mod tests {
         let task = vec![1.0f32; INGEST_DIMENSION as usize];
         let rule = vec![0.0f32; INGEST_DIMENSION as usize];
         let (task_id, rule_id, created_at, duplicate) = store
-            .insert_pair("task exact", "rule exact", &task, &rule)
+            .insert_pair("task exact", "rule exact", &task, &rule, 0.15, 0.15)
             .unwrap();
         assert!(!duplicate);
         assert!(task_id > 0 && rule_id > 0 && created_at > 0);
@@ -227,10 +234,24 @@ mod tests {
         let mut store = crate::vec_store::SqliteStore::open(&root).unwrap();
         let vector = vec![1.0f32; INGEST_DIMENSION as usize];
         let first = store
-            .insert_pair("canonical task", "canonical rule", &vector, &vector)
+            .insert_pair(
+                "canonical task",
+                "canonical rule",
+                &vector,
+                &vector,
+                0.15,
+                0.15,
+            )
             .unwrap();
         let second = store
-            .insert_pair("different spelling", "different question", &vector, &vector)
+            .insert_pair(
+                "different spelling",
+                "different question",
+                &vector,
+                &vector,
+                0.15,
+                0.15,
+            )
             .unwrap();
         assert_eq!((second.0, second.1, second.2), (first.0, first.1, first.2));
         assert!(!first.3);

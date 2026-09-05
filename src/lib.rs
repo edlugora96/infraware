@@ -28,6 +28,7 @@ mod patch;
 mod query;
 mod records;
 mod remove;
+mod settings;
 mod vec_shim;
 mod vec_store;
 

@@ -32,6 +32,11 @@ pub enum LibraryError {
         /// Human-readable description of the malformation.
         message: String,
     },
+    /// Repository settings are malformed or cannot be read.
+    Configuration {
+        /// Human-readable configuration diagnostic.
+        message: String,
+    },
     /// An I/O operation failed.
     Io {
         /// Human-readable description of the I/O failure.
@@ -62,6 +67,7 @@ impl fmt::Display for LibraryError {
             LibraryError::MalformedDocument { message } => {
                 write!(f, "malformed canonical document: {message}")
             }
+            LibraryError::Configuration { message } => write!(f, "configuration error: {message}"),
             LibraryError::Io { message } => write!(f, "i/o error: {message}"),
         }
     }

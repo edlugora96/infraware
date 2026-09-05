@@ -37,6 +37,7 @@ pub(crate) trait MutationStore {
         id: i64,
         text: &str,
         embedding: Option<&[f32]>,
+        threshold: f64,
     ) -> Result<(), LibraryError>;
 }
 impl MutationStore for crate::vec_store::SqliteStore {
@@ -48,8 +49,9 @@ impl MutationStore for crate::vec_store::SqliteStore {
         id: i64,
         text: &str,
         embedding: Option<&[f32]>,
+        threshold: f64,
     ) -> Result<(), LibraryError> {
-        crate::vec_store::SqliteStore::apply_patch(self, id, text, embedding)
+        crate::vec_store::SqliteStore::apply_patch(self, id, text, embedding, threshold)
     }
 }
 
@@ -113,12 +115,13 @@ fn execute_patch<S: MutationStore>(
     s: &mut S,
     v: &ValidatedPatch,
     embed: impl FnOnce(&str) -> Result<Vec<f32>, LibraryError>,
+    threshold: f64,
 ) -> Result<PatchOutcome, LibraryError> {
     match plan_patch(s, v)? {
         PatchPlan::NoOp(id) => Ok(PatchOutcome { id, patched: false }),
         PatchPlan::Change(id, text) => {
             let e = embed(&text).map_err(|x| if x.is_usage() { x } else { operational_err() })?;
-            s.apply_patch(id, &text, Some(&e))
+            s.apply_patch(id, &text, Some(&e), threshold)
                 .map_err(|_| operational_err())?;
             Ok(PatchOutcome { id, patched: true })
         }
@@ -133,6 +136,7 @@ pub(crate) fn run(
     root: &Path,
     id_raw: &str,
     text: Option<&str>,
+    threshold: f64,
 ) -> Result<DispatchOutput, LibraryError> {
     // Validate argv/payload before opening storage or touching the model.
     let validated = validate_patch_args(id_raw, text, None)?;
@@ -140,16 +144,22 @@ pub(crate) fn run(
         Ok(store) => store,
         Err(_) => return Err(operational_err()),
     };
-    let outcome = execute_patch(&mut store, &validated, |t| {
-        let paths = crate::model_cache::cached_model_files().map_err(|_| operational_err())?;
-        let embedder = crate::embed::BgeEmbedder::load(&paths).map_err(|_| operational_err())?;
-        use crate::ingest::Embedder;
-        match embedder.embed(t) {
-            Ok(embedding) => Ok(embedding),
-            Err(e) if e.is_usage() => Err(e),
-            Err(_) => Err(operational_err()),
-        }
-    })?;
+    let outcome = execute_patch(
+        &mut store,
+        &validated,
+        |t| {
+            let paths = crate::model_cache::cached_model_files().map_err(|_| operational_err())?;
+            let embedder =
+                crate::embed::BgeEmbedder::load(&paths).map_err(|_| operational_err())?;
+            use crate::ingest::Embedder;
+            match embedder.embed(t) {
+                Ok(embedding) => Ok(embedding),
+                Err(e) if e.is_usage() => Err(e),
+                Err(_) => Err(operational_err()),
+            }
+        },
+        threshold,
+    )?;
     Ok(DispatchOutput {
         format: OutputFormat::Json,
         body: output_json(&outcome),

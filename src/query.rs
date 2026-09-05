@@ -11,9 +11,6 @@ use serde::Serialize;
 use crate::dispatch::DispatchOutput;
 use crate::error::LibraryError;
 
-/// Fixed inclusive distance threshold echoed in every success envelope.
-pub(crate) const QUERY_MAX_DISTANCE: f64 = 0.15;
-
 /// Single ranked hit in the success envelope.
 ///
 /// Field declaration order is the serialization order: `id`, `score`, `distance`, `text`.
@@ -41,10 +38,10 @@ pub(crate) struct QueryEnvelope {
 /// - Compact form only (`serde_json::to_string`); empty `hits` renders `[]`.
 /// - No extra fields or alternate output modes.
 ///
-pub(crate) fn render_envelope(task: &str, hits: &[QueryHit]) -> String {
+pub(crate) fn render_envelope(task: &str, hits: &[QueryHit], max_distance: f64) -> String {
     let envelope = QueryEnvelope {
         task: task.to_string(),
-        max_distance: QUERY_MAX_DISTANCE,
+        max_distance,
         hits: hits.to_vec(),
     };
     // Serialization of owned strings/floats/maps cannot fail; panic would
@@ -258,6 +255,7 @@ pub(crate) fn run_with_model_embed(
     text: &str,
     resolve: impl FnOnce() -> Result<crate::model_cache::ModelPaths, LibraryError>,
     embed: impl FnOnce(&crate::model_cache::ModelPaths, &str) -> Result<Vec<f32>, LibraryError>,
+    max_distance: f64,
 ) -> Result<DispatchOutput, LibraryError> {
     let store = match crate::vec_store::SqliteStore::open_read_only(root) {
         Ok(store) => store,
@@ -293,7 +291,7 @@ pub(crate) fn run_with_model_embed(
     for crate::vec_store::QueryCandidateRow(rule_id, task_id, created, embedding, rule_text) in rows
     {
         let d = cosine_distance(&query_embedding, &embedding);
-        if d <= QUERY_MAX_DISTANCE {
+        if d <= max_distance {
             let replace = best
                 .get(&rule_id)
                 .is_none_or(|x: &(f64, i64, i64, String)| d < x.0 || (d == x.0 && task_id < x.1));
@@ -314,7 +312,7 @@ pub(crate) fn run_with_model_embed(
         })
         .collect::<Vec<_>>();
     if hits.is_empty() {
-        let body = render_envelope(text, &hits);
+        let body = render_envelope(text, &hits, max_distance);
         return Ok(DispatchOutput {
             format: crate::format::OutputFormat::Json,
             body,
@@ -335,7 +333,7 @@ pub(crate) fn run_with_model_embed(
     {
         return Err(operational_err());
     }
-    let body = render_envelope(text, &hits);
+    let body = render_envelope(text, &hits, max_distance);
     Ok(DispatchOutput {
         format: crate::format::OutputFormat::Json,
         body,
@@ -354,7 +352,11 @@ pub(crate) fn run_with_model_embed(
 /// `InvalidInput`: argv/filter validation stays in the parser, so
 /// status-2 handling is preserved by construction. The ingest read-write
 /// opener is never touched here.
-pub(crate) fn run(root: &Path, text: &str) -> Result<DispatchOutput, LibraryError> {
+pub(crate) fn run(
+    root: &Path,
+    text: &str,
+    settings: crate::settings::Settings,
+) -> Result<DispatchOutput, LibraryError> {
     run_with_model_embed(
         root,
         text,
@@ -364,5 +366,6 @@ pub(crate) fn run(root: &Path, text: &str) -> Result<DispatchOutput, LibraryErro
             use crate::ingest::Embedder;
             embedder.embed(task_text).map_err(|_| operational_err())
         },
+        settings.query_max,
     )
 }

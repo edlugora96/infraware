@@ -183,26 +183,29 @@ impl SqliteStore {
         q: &str,
         fv: &[f32],
         qv: &[f32],
+        task_threshold: f64,
+        rule_threshold: f64,
     ) -> Result<(i64, i64, i64, bool), LibraryError> {
         let tx = self.conn.transaction().map_err(er)?;
         let t = now();
-        let nearest = |table: &str, vector: &[f32]| -> Result<Option<i64>, LibraryError> {
-            let sql = format!("SELECT rowid,embedding FROM {table}");
-            let mut st = tx.prepare(&sql).map_err(er)?;
-            let mut best: Option<(f64, i64)> = None;
-            let rows = st
-                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
-                .map_err(er)?;
-            for row in rows {
-                let (id, bytes) = row.map_err(er)?;
-                let d = crate::query::cosine_distance(vector, &dec(&bytes)?);
-                if d <= 0.15 && best.as_ref().is_none_or(|b| (d, id) < (b.0, b.1)) {
-                    best = Some((d, id));
+        let nearest =
+            |table: &str, vector: &[f32], threshold: f64| -> Result<Option<i64>, LibraryError> {
+                let sql = format!("SELECT rowid,embedding FROM {table}");
+                let mut st = tx.prepare(&sql).map_err(er)?;
+                let mut best: Option<(f64, i64)> = None;
+                let rows = st
+                    .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
+                    .map_err(er)?;
+                for row in rows {
+                    let (id, bytes) = row.map_err(er)?;
+                    let d = crate::query::cosine_distance(vector, &dec(&bytes)?);
+                    if d <= threshold && best.as_ref().is_none_or(|b| (d, id) < (b.0, b.1)) {
+                        best = Some((d, id));
+                    }
                 }
-            }
-            Ok(best.map(|(_, id)| id))
-        };
-        let fi = match nearest("task_vecs", fv)? {
+                Ok(best.map(|(_, id)| id))
+            };
+        let fi = match nearest("task_vecs", fv, task_threshold)? {
             Some(id) => id,
             None => {
                 tx.execute(
@@ -219,7 +222,7 @@ impl SqliteStore {
                 id
             }
         };
-        let qi = match nearest("rule_vecs", qv)? {
+        let qi = match nearest("rule_vecs", qv, rule_threshold)? {
             Some(id) => id,
             None => {
                 tx.execute(
@@ -338,6 +341,7 @@ impl SqliteStore {
         id: i64,
         text: &str,
         v: Option<&[f32]>,
+        threshold: f64,
     ) -> Result<(), LibraryError> {
         let tx = self.conn.transaction().map_err(er)?;
         if tx
@@ -361,7 +365,7 @@ impl SqliteStore {
             for row in rows {
                 let (other, bytes) = row.map_err(er)?;
                 let distance = crate::query::cosine_distance(v, &dec(&bytes)?);
-                if distance <= 0.15
+                if distance <= threshold
                     && candidate
                         .as_ref()
                         .is_none_or(|(d, existing)| (distance, other) < (*d, *existing))

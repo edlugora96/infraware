@@ -44,17 +44,26 @@ pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, Library
         Command::Ingest {
             task_text,
             rule_text,
-        } => ingest::run(root, &task_text, &rule_text),
+        } => {
+            let s = crate::settings::load(root)?;
+            ingest::run(root, &task_text, &rule_text, s)
+        }
         // Task 2.3: `query` execution seam. The arm only routes the owned
         // parser payload to `query::run`; behavior stays deferred to tasks
         // 3.x-6.x. The stub returns a non-usage operational error, so `run`
         // maps it to status 1 with empty stdout (never usage status 2).
-        Command::Query { text } => crate::query::run(root, &text),
+        Command::Query { text } => {
+            let s = crate::settings::load(root)?;
+            crate::query::run(root, &text, s)
+        }
         // Read-only SQLite verbs through the thin records cores: direct
         // point fetch (`get`) and ascending-id snapshot scan (`list`).
         Command::List { limit, offset } => crate::records::list(root, limit, offset),
         Command::Get { id } => crate::records::get(root, &id),
-        Command::Patch { id, text } => crate::patch::run(root, &id, text.as_deref()),
+        Command::Patch { id, text } => {
+            let s = crate::settings::load(root)?;
+            crate::patch::run(root, &id, text.as_deref(), s.task_dedup)
+        }
         Command::Remove { id } => {
             // Hard delete by positive integer record id. ID shape,
             // storage, and record-not-found rules live in `remove::run`.
