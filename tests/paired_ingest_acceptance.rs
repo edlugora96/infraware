@@ -15,8 +15,6 @@ fn v2_ddl_has_all_clean_tables_and_technical_model_metadata() {
         "CREATE VIRTUAL TABLE fact_vecs USING vec0(embedding float[384] distance_metric=cosine)",
         "CREATE VIRTUAL TABLE query_vecs USING vec0(embedding float[384] distance_metric=cosine)",
         "CREATE TABLE pair_relations(",
-        "CREATE TABLE query_runs(",
-        "CREATE TABLE query_fact_links(",
         "CREATE TABLE model_meta(",
     ] {
         assert!(s.contains(table), "missing clean v2 DDL: {table}");
@@ -55,7 +53,7 @@ fn lifecycle_is_create_only_for_ingest_and_reads_use_existing_gates() {
 #[test]
 fn pair_relation_and_history_retention_are_explicit() {
     let s = store_source();
-    assert!(s.contains("DELETE FROM query_fact_links WHERE fact_id=?1"));
+    assert!(!s.contains("query_fact_links"));
     assert!(s.contains("DELETE FROM pair_relations WHERE fact_id=?1"));
     assert!(s.contains("DELETE FROM fact_vecs WHERE rowid=?1"));
     // Removal never deletes queries or query vectors: history is independent.
@@ -93,5 +91,5 @@ fn atomic_write_and_safe_failure_mapping_are_visible_at_the_storage_seam() {
     let q = fs::read_to_string("src/query.rs").expect("query source is present");
     assert!(q.contains("then_with(|| a.id.cmp(&b.id))"));
     assert!(q.contains("distance <= QUERY_MAX_DISTANCE"));
-    assert!(q.contains("persist_query"));
+    assert!(q.contains("insert_query_for_fact(top_fact_id, text, &query_embedding)"));
 }

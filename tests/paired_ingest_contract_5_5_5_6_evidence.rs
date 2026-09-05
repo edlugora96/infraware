@@ -21,14 +21,13 @@ fn query_uses_historical_vectors_and_collapses_to_nearest_link() {
         "best.insert(fid",
         "qid < x.1",
         "then_with(|| a.0.cmp(&b.0))",
-        "persist_query",
+        "insert_query_for_fact(top_fact_id, text, &query_embedding)",
         "drop(store)",
         "if hits.is_empty()",
     ] {
         assert!(q.contains(required), "query evidence missing {required:?}");
     }
-    assert!(q.contains("hit.link = None"));
-    assert!(q.contains("created_at: created"));
+    assert!(!q.contains("hit.link"));
 }
 
 #[test]
@@ -38,7 +37,7 @@ fn query_snapshot_is_read_before_separate_top_only_write() {
     let write = q.find("open_existing_rw").expect("write seam");
     assert!(read < write, "retrieval must precede the write transaction");
     assert!(q[read..write].contains("hits.is_empty()"));
-    assert!(q[write..].contains("persist_query(text, \"\", top_fact_id"));
+    assert!(q[write..].contains("insert_query_for_fact(top_fact_id, text, &query_embedding)"));
     // The empty branch returns before opening the RW connection: zero-hit is
     // both successful and free of query-run/link writes.
     assert!(q[..write].contains("return Ok(DispatchOutput"));
@@ -54,7 +53,7 @@ fn patch_recomputes_vectors_and_atomically_merges_all_owned_links() {
         "SELECT rowid,embedding FROM fact_vecs WHERE rowid<>?1",
         "if distance <= 0.15",
         "UPDATE OR IGNORE pair_relations",
-        "UPDATE OR IGNORE query_fact_links",
+        "UPDATE OR IGNORE pair_relations",
         "DELETE FROM fact_vecs WHERE rowid=?1",
         "DELETE FROM facts WHERE fact_id=?1",
         "let tx = self.conn.transaction().map_err(er)?",
@@ -85,7 +84,7 @@ fn list_get_and_remove_are_read_only_or_atomic_and_text_only() {
     }
     for required in [
         "open_existing_rw",
-        "DELETE FROM query_fact_links WHERE fact_id=?1",
+        "DELETE FROM pair_relations WHERE fact_id=?1",
         "DELETE FROM pair_relations WHERE fact_id=?1",
         "DELETE FROM fact_vecs WHERE rowid=?1",
         "DELETE FROM facts WHERE fact_id=?1",

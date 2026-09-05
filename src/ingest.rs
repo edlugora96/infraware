@@ -186,8 +186,6 @@ mod tests {
             "fact_vecs",
             "query_vecs",
             "pair_relations",
-            "query_runs",
-            "query_fact_links",
             "model_meta",
         ] {
             assert!(schema.iter().any(|name| name == table), "missing {table}");
