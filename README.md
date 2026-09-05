@@ -62,8 +62,8 @@ No internal updater. To update: `npm install -g github:edlugora96/infraware#<new
 
 The six verbs are `ingest`, `query`, `list`, `get`, `patch`, and `remove`. They use `<project>/.infraware/vec-index.sqlite`.
 
-- `ingest <FACT_TEXT> <QUERY_TEXT>` stores one fact and its paired historical query. It embeds both raw texts independently, reuses nearby canonical fact and query rows, and returns `fact_id`, `query_id`, `created_at`, and `duplicate` after commit.
+- `ingest <TASK_TEXT> <RULE_TEXT>` stores one task and its paired historical rule. It embeds both raw texts independently, reuses nearby canonical task and rule rows, and returns `task_id`, `rule_id`, `created_at`, and `duplicate` after commit.
 - The v2 store has no user metadata or metadata filters. `list` and `get` return only IDs, text, and epoch-millisecond timestamps. `patch` accepts `--text` only.
-- Only ingest creates a missing store, and it creates a fresh v2 schema. Other verbs require an existing compatible v2 store and never migrate or repair it.
-- `query <TEXT>` searches historical query embeddings, follows fact/query pair relations, and returns nearest facts first.
+- Only ingest creates a missing store, and it creates a fresh schema with informational `schema_version=1`. Other verbs require an existing compatible store and never migrate or repair it.
+- `query <TASK_TEXT>` searches historical task embeddings, follows task/rule pair relations, and returns nearest tasks first.
 - Failed SQLite writes roll back. Usage and validation failures exit 2 with empty stdout. Store and operational failures exit 1 with empty stdout and one `error:` line on stderr.
