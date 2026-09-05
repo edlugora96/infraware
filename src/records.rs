@@ -16,6 +16,7 @@
 
 use std::path::Path;
 
+use crate::command::{Entity, ListEntity};
 use crate::dispatch::DispatchOutput;
 use crate::error::LibraryError;
 use crate::format::OutputFormat;
@@ -53,7 +54,11 @@ fn output_get_json(record: &FetchedRecord) -> String {
 }
 
 /// Execute `get` against `root`: validate the id, then point-fetch.
-pub(crate) fn get(root: &Path, id_raw: &str) -> Result<DispatchOutput, LibraryError> {
+pub(crate) fn get(
+    root: &Path,
+    id_raw: &str,
+    entity: Entity,
+) -> Result<DispatchOutput, LibraryError> {
     // Positive-integer rule shared with the mutation verbs; malformed ids
     // are usage errors reported before any storage work.
     let id = crate::remove::parse_record_id(id_raw).map_err(|_| LibraryError::InvalidInput {
@@ -64,7 +69,7 @@ pub(crate) fn get(root: &Path, id_raw: &str) -> Result<DispatchOutput, LibraryEr
         Ok(store) => store,
         Err(_) => return Err(operational_err()),
     };
-    let record = read_one(&store, id)?;
+    let record = read_one(&store, id, entity)?;
     Ok(DispatchOutput {
         format: OutputFormat::Json,
         body: output_get_json(&record),
@@ -75,15 +80,17 @@ pub(crate) fn get(root: &Path, id_raw: &str) -> Result<DispatchOutput, LibraryEr
 ///
 /// A missing row is the distinct [`LibraryError::MissingDefinition`]; every
 /// other failure is the redacted operational error.
-fn read_one(store: &crate::vec_store::SqliteStore, id: i64) -> Result<FetchedRecord, LibraryError> {
-    let text = match store.read_record(id) {
-        Ok(text) => text,
-        Err(LibraryError::MissingDefinition { .. }) => {
-            return Err(LibraryError::MissingDefinition { id: id.to_string() });
+fn read_one(
+    store: &crate::vec_store::SqliteStore,
+    id: i64,
+    entity: Entity,
+) -> Result<FetchedRecord, LibraryError> {
+    let (text, created_at) = store.read_entity(entity, id).map_err(|e| match e {
+        LibraryError::MissingDefinition { .. } => {
+            LibraryError::MissingDefinition { id: id.to_string() }
         }
-        Err(_) => return Err(operational_err()),
-    };
-    let created_at = store.created_at(id).map_err(|_| operational_err())?;
+        _ => operational_err(),
+    })?;
     Ok(FetchedRecord {
         id,
         text,
@@ -95,13 +102,18 @@ fn read_one(store: &crate::vec_store::SqliteStore, id: i64) -> Result<FetchedRec
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ListedPage {
     pub(crate) total: usize,
+    pub(crate) limit: usize,
+    pub(crate) offset: usize,
     pub(crate) records: Vec<FetchedRecord>,
 }
 
 /// Render the exact compact `list` JSON:
 /// `{"total":N,"records":[{...},...]}` with rows in ascending id order.
 fn output_list_json(page: &ListedPage) -> String {
-    let mut out = format!("{{\"total\":{},\"records\":[", page.total);
+    let mut out = format!(
+        "{{\"total\":{},\"limit\":{},\"offset\":{},\"records\":[",
+        page.total, page.limit, page.offset
+    );
     for (i, record) in page.records.iter().enumerate() {
         if i > 0 {
             out.push(',');
@@ -126,13 +138,22 @@ pub(crate) fn list(
     root: &Path,
     limit: usize,
     offset: usize,
+    entity: ListEntity,
 ) -> Result<DispatchOutput, LibraryError> {
     // Read-only open: a missing index is operational and creates nothing.
     let store = match crate::vec_store::SqliteStore::open_read_only(root) {
         Ok(store) => store,
         Err(_) => return Err(operational_err()),
     };
-    let rows = store.list_records().map_err(|_| operational_err())?;
+    let entities = match entity {
+        ListEntity::Rules => vec![Entity::Rules],
+        ListEntity::Tasks => vec![Entity::Tasks],
+        ListEntity::All => vec![Entity::Rules, Entity::Tasks],
+    };
+    let mut store = store;
+    let rows = store
+        .list_entities(&entities)
+        .map_err(|_| operational_err())?;
     let mut records = Vec::new();
     for (id, text, created_at) in rows {
         records.push(FetchedRecord {
@@ -148,6 +169,8 @@ pub(crate) fn list(
     let page_records: Vec<FetchedRecord> = records.into_iter().skip(offset).take(limit).collect();
     let page = ListedPage {
         total,
+        limit,
+        offset,
         records: page_records,
     };
     Ok(DispatchOutput {
@@ -176,6 +199,8 @@ mod tests {
     fn list_pagination_preserves_total_and_order() {
         let page = ListedPage {
             total: 3,
+            limit: 2,
+            offset: 1,
             records: vec![
                 FetchedRecord {
                     id: 2,
@@ -201,7 +226,11 @@ mod tests {
             std::env::temp_dir().join(format!("infraware-records-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        assert!(get(&root, "not-an-id").unwrap_err().is_usage());
+        assert!(
+            get(&root, "not-an-id", Entity::Rules)
+                .unwrap_err()
+                .is_usage()
+        );
         assert!(!root.join(".infraware").exists());
         let _ = std::fs::remove_dir_all(root);
     }

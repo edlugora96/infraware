@@ -58,11 +58,16 @@ pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, Library
         }
         // Read-only SQLite verbs through the thin records cores: direct
         // point fetch (`get`) and ascending-id snapshot scan (`list`).
-        Command::List { limit, offset } => crate::records::list(root, limit, offset),
-        Command::Get { id } => crate::records::get(root, &id),
-        Command::Patch { id, text } => {
-            let s = crate::settings::load(root)?;
-            crate::patch::run(root, &id, text.as_deref(), s.task_dedup)
+        Command::List {
+            limit,
+            offset,
+            entity,
+        } => crate::records::list(root, limit, offset, entity),
+        Command::Get { id, entity } => crate::records::get(root, &id, entity),
+        Command::Patch { id, text, entity } => {
+            // Patch validates its complete payload before settings/configuration
+            // or storage I/O, so malformed syntax has usage precedence.
+            crate::patch::run(root, &id, text.as_deref(), entity)
         }
         Command::Remove { id } => {
             // Hard delete by positive integer record id. ID shape,

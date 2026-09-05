@@ -32,7 +32,7 @@ mod settings;
 mod vec_shim;
 mod vec_store;
 
-pub use command::Command;
+pub use command::{Command, Entity, ListEntity};
 pub use dispatch::{DispatchOutput, dispatch};
 pub use error::LibraryError;
 pub use format::OutputFormat;

@@ -259,21 +259,24 @@ impl SqliteStore {
         tx.commit().map_err(er)?;
         Ok((fi, qi, t, false))
     }
-    pub(crate) fn read_task_text(&self, id: i64) -> Result<String, LibraryError> {
-        self.conn
-            .query_row("SELECT text FROM tasks WHERE task_id=?1", [id], |r| {
-                r.get(0)
-            })
-            .map_err(er)
-    }
-    pub(crate) fn read_task(&self, id: i64) -> Result<(String, i64), LibraryError> {
+    pub(crate) fn read_entity_text(
+        &self,
+        entity: crate::command::Entity,
+        id: i64,
+    ) -> Result<String, LibraryError> {
+        let (table, key) = match entity {
+            crate::command::Entity::Rules => ("rules", "rule_id"),
+            crate::command::Entity::Tasks => ("tasks", "task_id"),
+        };
         self.conn
             .query_row(
-                "SELECT text,created_at FROM tasks WHERE task_id=?1",
+                &format!("SELECT text FROM {table} WHERE {key}=?1"),
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| r.get(0),
             )
-            .map_err(er)
+            .optional()
+            .map_err(er)?
+            .ok_or_else(|| LibraryError::MissingDefinition { id: id.to_string() })
     }
     pub(crate) fn insert_task_for_rule(
         &mut self,
@@ -301,25 +304,51 @@ impl SqliteStore {
         .map_err(er)?;
         tx.commit().map_err(er)
     }
-    pub(crate) fn created_at(&self, id: i64) -> Result<i64, LibraryError> {
+    pub(crate) fn read_entity(
+        &self,
+        entity: crate::command::Entity,
+        id: i64,
+    ) -> Result<(String, i64), LibraryError> {
+        let (table, key) = match entity {
+            crate::command::Entity::Rules => ("rules", "rule_id"),
+            crate::command::Entity::Tasks => ("tasks", "task_id"),
+        };
         self.conn
-            .query_row("SELECT created_at FROM tasks WHERE task_id=?1", [id], |r| {
-                r.get(0)
-            })
-            .map_err(er)
-    }
-    pub(crate) fn list_records(&self) -> Result<Vec<(i64, String, i64)>, LibraryError> {
-        let mut s = self
-            .conn
-            .prepare("SELECT task_id,text,created_at FROM tasks ORDER BY task_id")
-            .map_err(er)?;
-        s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .query_row(
+                &format!("SELECT text,created_at FROM {table} WHERE {key}=?1"),
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
             .map_err(er)?
-            .map(|x| x.map_err(er))
-            .collect()
+            .ok_or_else(|| LibraryError::MissingDefinition { id: id.to_string() })
     }
-    pub(crate) fn read_record(&self, id: i64) -> Result<String, LibraryError> {
-        self.read_task(id).map(|(text, _)| text)
+    pub(crate) fn list_entities(
+        &mut self,
+        entities: &[crate::command::Entity],
+    ) -> Result<Vec<(i64, String, i64)>, LibraryError> {
+        let tx = self.conn.transaction().map_err(er)?;
+        let mut out = Vec::new();
+        for entity in entities {
+            let (table, key) = match entity {
+                crate::command::Entity::Rules => ("rules", "rule_id"),
+                crate::command::Entity::Tasks => ("tasks", "task_id"),
+            };
+            let mut stmt = tx
+                .prepare(&format!(
+                    "SELECT {key},text,created_at FROM {table} ORDER BY {key}"
+                ))
+                .map_err(er)?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .map_err(er)?;
+            out.extend(
+                rows.map(|row| row.map_err(er))
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        tx.commit().map_err(er)?;
+        Ok(out)
     }
     pub(crate) fn remove_record(&mut self, id: i64) -> Result<(), LibraryError> {
         let tx = self.conn.transaction().map_err(er)?;
@@ -338,26 +367,33 @@ impl SqliteStore {
     }
     pub(crate) fn apply_patch(
         &mut self,
+        entity: crate::command::Entity,
         id: i64,
         text: &str,
         v: Option<&[f32]>,
         threshold: f64,
     ) -> Result<(), LibraryError> {
         let tx = self.conn.transaction().map_err(er)?;
+        let (table, key, vec_table, rel_key) = match entity {
+            crate::command::Entity::Rules => ("rules", "rule_id", "rule_vecs", "rule_id"),
+            crate::command::Entity::Tasks => ("tasks", "task_id", "task_vecs", "task_id"),
+        };
         if tx
             .execute(
-                "UPDATE tasks SET text=?1 WHERE task_id=?2",
+                &format!("UPDATE {table} SET text=?1 WHERE {key}=?2"),
                 rusqlite::params![text, id],
             )
             .map_err(er)?
             != 1
         {
-            return Err(er("missing task"));
+            return Err(LibraryError::MissingDefinition { id: id.to_string() });
         };
         if let Some(v) = v {
             let mut candidate = None;
             let mut st = tx
-                .prepare("SELECT rowid,embedding FROM task_vecs WHERE rowid<>?1")
+                .prepare(&format!(
+                    "SELECT rowid,embedding FROM {vec_table} WHERE rowid<>?1"
+                ))
                 .map_err(er)?;
             let rows = st
                 .query_map([id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
@@ -376,21 +412,33 @@ impl SqliteStore {
             drop(st);
             if let Some((_, canonical)) = candidate {
                 tx.execute(
-                    "UPDATE OR IGNORE task_rule_relations SET task_id=?1 WHERE task_id=?2",
+                    &format!(
+                        "UPDATE OR IGNORE task_rule_relations SET {rel_key}=?1 WHERE {rel_key}=?2"
+                    ),
                     rusqlite::params![canonical, id],
                 )
                 .map_err(er)?;
-                tx.execute("DELETE FROM task_rule_relations WHERE task_id=?1", [id])
+                tx.execute(
+                    &format!("DELETE FROM task_rule_relations WHERE {rel_key}=?1"),
+                    [id],
+                )
+                .map_err(er)?;
+                tx.execute(&format!("DELETE FROM {vec_table} WHERE rowid=?1"), [id])
                     .map_err(er)?;
-                tx.execute("DELETE FROM task_vecs WHERE rowid=?1", [id])
-                    .map_err(er)?;
-                tx.execute("DELETE FROM tasks WHERE task_id=?1", [id])
-                    .map_err(er)?;
+                let (delete_table, delete_key) = match entity {
+                    crate::command::Entity::Rules => ("rules", "rule_id"),
+                    crate::command::Entity::Tasks => ("tasks", "task_id"),
+                };
+                tx.execute(
+                    &format!("DELETE FROM {delete_table} WHERE {delete_key}=?1"),
+                    [id],
+                )
+                .map_err(er)?;
             } else {
-                tx.execute("DELETE FROM task_vecs WHERE rowid=?1", [id])
+                tx.execute(&format!("DELETE FROM {vec_table} WHERE rowid=?1"), [id])
                     .map_err(er)?;
                 tx.execute(
-                    "INSERT INTO task_vecs(rowid,embedding)VALUES(?1,?2)",
+                    &format!("INSERT INTO {vec_table}(rowid,embedding)VALUES(?1,?2)"),
                     rusqlite::params![id, enc(v)],
                 )
                 .map_err(er)?;

@@ -4,6 +4,26 @@
 //! exact approved grammar and routes it through the single [`dispatch`](crate::dispatch::dispatch)
 //! boundary. The library never sees raw argv.
 
+/// A closed selector for a single entity table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Entity {
+    /// Rule records.
+    Rules,
+    /// Task records.
+    Tasks,
+}
+
+/// A closed selector for list, including the combined view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListEntity {
+    /// Rule records.
+    Rules,
+    /// Task records.
+    Tasks,
+    /// Rules followed by tasks.
+    All,
+}
+
 /// A typed CLI command request.
 ///
 /// Mirrors the exact approved grammar (six SQLite-backed verbs only):
@@ -37,11 +57,15 @@ pub enum Command {
         limit: usize,
         /// Row offset into the ascending-id filtered set.
         offset: usize,
+        /// Entity table to list.
+        entity: ListEntity,
     },
     /// `get <ID>` — direct SQLite point fetch by positive integer record id.
     Get {
         /// Target record id (validated to a positive integer at execution).
         id: String,
+        /// Entity table to read.
+        entity: Entity,
     },
     /// `patch <ID> --text <TEXT>` — record text update.
     Patch {
@@ -49,6 +73,8 @@ pub enum Command {
         id: String,
         /// Replacement text when `--text` was supplied.
         text: Option<String>,
+        /// Entity table to patch.
+        entity: Entity,
     },
     /// `remove <ID>` — semantic search hard delete by positive integer record id.
     Remove {

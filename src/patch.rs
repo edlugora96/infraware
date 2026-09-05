@@ -9,6 +9,7 @@
 
 use std::path::Path;
 
+use crate::command::Entity;
 use crate::dispatch::DispatchOutput;
 use crate::error::LibraryError;
 use crate::format::OutputFormat;
@@ -31,9 +32,10 @@ fn operational_err() -> LibraryError {
 /// in-memory fakes prove ordering and zero embeds for identical patches without
 /// SQLite or a model.
 pub(crate) trait MutationStore {
-    fn read_task_text(&self, id: i64) -> Result<String, LibraryError>;
+    fn read_entity_text(&self, entity: Entity, id: i64) -> Result<String, LibraryError>;
     fn apply_patch(
         &mut self,
+        entity: Entity,
         id: i64,
         text: &str,
         embedding: Option<&[f32]>,
@@ -41,17 +43,18 @@ pub(crate) trait MutationStore {
     ) -> Result<(), LibraryError>;
 }
 impl MutationStore for crate::vec_store::SqliteStore {
-    fn read_task_text(&self, id: i64) -> Result<String, LibraryError> {
-        crate::vec_store::SqliteStore::read_task_text(self, id)
+    fn read_entity_text(&self, entity: Entity, id: i64) -> Result<String, LibraryError> {
+        crate::vec_store::SqliteStore::read_entity_text(self, entity, id)
     }
     fn apply_patch(
         &mut self,
+        entity: Entity,
         id: i64,
         text: &str,
         embedding: Option<&[f32]>,
         threshold: f64,
     ) -> Result<(), LibraryError> {
-        crate::vec_store::SqliteStore::apply_patch(self, id, text, embedding, threshold)
+        crate::vec_store::SqliteStore::apply_patch(self, entity, id, text, embedding, threshold)
     }
 }
 
@@ -70,10 +73,12 @@ fn output_json(out: &PatchOutcome) -> String {
 struct ValidatedPatch {
     id: i64,
     text: String,
+    entity: Entity,
 }
 fn validate_patch_args(
     id_raw: &str,
     text: Option<&str>,
+    entity: Entity,
     _unsupported: Option<&str>,
 ) -> Result<ValidatedPatch, LibraryError> {
     let id = crate::remove::parse_record_id(id_raw).map_err(|_| LibraryError::InvalidInput {
@@ -97,6 +102,7 @@ fn validate_patch_args(
     Ok(ValidatedPatch {
         id,
         text: text.into(),
+        entity,
     })
 }
 enum PatchPlan {
@@ -104,7 +110,7 @@ enum PatchPlan {
     Change(i64, String),
 }
 fn plan_patch<S: MutationStore>(s: &S, v: &ValidatedPatch) -> Result<PatchPlan, LibraryError> {
-    let old = s.read_task_text(v.id)?;
+    let old = s.read_entity_text(v.entity, v.id)?;
     if old == v.text {
         Ok(PatchPlan::NoOp(v.id))
     } else {
@@ -121,8 +127,13 @@ fn execute_patch<S: MutationStore>(
         PatchPlan::NoOp(id) => Ok(PatchOutcome { id, patched: false }),
         PatchPlan::Change(id, text) => {
             let e = embed(&text).map_err(|x| if x.is_usage() { x } else { operational_err() })?;
-            s.apply_patch(id, &text, Some(&e), threshold)
-                .map_err(|_| operational_err())?;
+            match s.apply_patch(v.entity, id, &text, Some(&e), threshold) {
+                Ok(()) => {}
+                Err(LibraryError::MissingDefinition { .. }) => {
+                    return Err(LibraryError::MissingDefinition { id: id.to_string() });
+                }
+                Err(_) => return Err(operational_err()),
+            }
             Ok(PatchOutcome { id, patched: true })
         }
     }
@@ -136,10 +147,15 @@ pub(crate) fn run(
     root: &Path,
     id_raw: &str,
     text: Option<&str>,
-    threshold: f64,
+    entity: Entity,
 ) -> Result<DispatchOutput, LibraryError> {
     // Validate argv/payload before opening storage or touching the model.
-    let validated = validate_patch_args(id_raw, text, None)?;
+    let validated = validate_patch_args(id_raw, text, entity, None)?;
+    let settings = crate::settings::load(root)?;
+    let threshold = match entity {
+        Entity::Rules => settings.rule_dedup,
+        Entity::Tasks => settings.task_dedup,
+    };
     let mut store = match crate::vec_store::SqliteStore::open_existing_rw(root) {
         Ok(store) => store,
         Err(_) => return Err(operational_err()),
