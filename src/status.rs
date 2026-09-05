@@ -86,6 +86,7 @@ mod tests {
                 task_dedup: 0.15,
                 rule_dedup: 0.15,
                 query_max: 0.15,
+                query_auto_ingest: false,
                 staleness_threshold_days: 14.0,
             },
         )

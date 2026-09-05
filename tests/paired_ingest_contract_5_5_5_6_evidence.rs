@@ -24,6 +24,7 @@ fn query_uses_historical_vectors_and_collapses_to_nearest_link() {
         "insert_task_for_rule(text, &query_embedding, top_rule_id)",
         "drop(store)",
         "if hits.is_empty()",
+        "if !query_auto_ingest",
     ] {
         assert!(q.contains(required), "rule evidence missing {required:?}");
     }
@@ -37,6 +38,8 @@ fn query_snapshot_is_read_before_separate_top_only_write() {
     let write = q.find("open_existing_rw").expect("write seam");
     assert!(read < write, "retrieval must precede the write transaction");
     assert!(q[read..write].contains("hits.is_empty()"));
+    let gate = q.find("if !query_auto_ingest").expect("write gate");
+    assert!(gate < write, "disabled mode must return before RW open");
     assert!(q[write..].contains("insert_task_for_rule(text, &query_embedding, top_rule_id)"));
     // The empty branch returns before opening the RW connection: zero-hit is
     // both successful and free of rule-run/link writes.

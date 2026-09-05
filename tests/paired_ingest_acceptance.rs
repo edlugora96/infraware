@@ -99,6 +99,8 @@ fn atomic_write_and_safe_failure_mapping_are_visible_at_the_storage_seam() {
     let q = fs::read_to_string("src/query.rs").expect("query source is present");
     assert!(q.contains("then_with(|| a.0.cmp(&b.0))"));
     assert!(q.contains("if d <= max_distance"));
-    assert!(q.contains("settings.query_max"));
+    assert!(q.contains("query_max: f64"));
+    let d = fs::read_to_string("src/dispatch.rs").expect("dispatch source is present");
+    assert!(d.contains("s.query_max"));
     assert!(q.contains("insert_task_for_rule(text, &query_embedding, top_rule_id)"));
 }
