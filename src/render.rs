@@ -1,5 +1,44 @@
 use crate::{error::LibraryError, format::OutputFormat};
+use chrono::{DateTime, FixedOffset};
 use serde_json::Value;
+
+fn humanize_field(value: &mut Value, key: &str, reference: DateTime<FixedOffset>) {
+    if let Some(number) = value.get(key).and_then(Value::as_i64) {
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                key.into(),
+                Value::String(crate::chrono_format::humanize(number, reference)),
+            );
+        }
+    }
+}
+
+fn humanize_detailed(value: &mut Value, name: &str, reference: DateTime<FixedOffset>) {
+    if matches!(name, "ingest" | "get") {
+        humanize_field(value, "created_at", reference);
+    }
+    if name == "status" {
+        for key in ["stale_tasks", "stale_rules"] {
+            if let Some(items) = value.get_mut(key).and_then(Value::as_array_mut) {
+                for item in items {
+                    humanize_field(item, "last_revised_at", reference);
+                }
+            }
+        }
+    }
+    if name == "list" {
+        if let Some(rules) = value.get_mut("rules").and_then(Value::as_array_mut) {
+            for rule in rules {
+                humanize_field(rule, "created_at", reference);
+                if let Some(tasks) = rule.get_mut("tasks").and_then(Value::as_array_mut) {
+                    for task in tasks {
+                        humanize_field(task, "created_at", reference);
+                    }
+                }
+            }
+        }
+    }
+}
 
 fn project_list(value: &mut Value, detailed: bool) {
     if let Some(rules) = value.get_mut("rules").and_then(Value::as_array_mut) {
@@ -37,6 +76,22 @@ pub(crate) fn render(
     body: &str,
     format: OutputFormat,
     detailed: bool,
+) -> Result<String, LibraryError> {
+    render_at(
+        name,
+        body,
+        format,
+        detailed,
+        crate::chrono_format::production_reference(),
+    )
+}
+
+fn render_at(
+    name: &str,
+    body: &str,
+    format: OutputFormat,
+    detailed: bool,
+    reference: chrono::DateTime<chrono::FixedOffset>,
 ) -> Result<String, LibraryError> {
     if format == OutputFormat::Json {
         if name != "list" && name != "patch" {
@@ -110,8 +165,13 @@ pub(crate) fn render(
             "list" => project_list(&mut v, false),
             _ => {}
         }
-    } else if name == "list" {
-        project_list(&mut v, detailed);
+    } else {
+        if name == "list" {
+            project_list(&mut v, detailed);
+        }
+        if detailed {
+            humanize_detailed(&mut v, name, reference);
+        }
     }
     serde_yaml::to_string(&v).map_err(|_| LibraryError::Io {
         message: "render failed".into(),
@@ -121,6 +181,7 @@ pub(crate) fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     fn keys(text: &str) -> Vec<String> {
         let mut keys: Vec<String> = serde_yaml::from_str::<serde_yaml::Value>(text)
             .unwrap()
@@ -204,7 +265,11 @@ mod tests {
             let value: Value = serde_yaml::from_str(&yaml).unwrap();
             assert_eq!(value["id"], 7);
             assert_eq!(value["text"], "value");
-            assert_eq!(value["created_at"], 42);
+            if detailed {
+                assert!(value["created_at"].as_str().is_some());
+            } else {
+                assert_eq!(value["created_at"], 42);
+            }
         }
         let json = render("get", get_body, OutputFormat::Json, false).unwrap();
         assert_eq!(json, get_body);
@@ -300,6 +365,32 @@ mod tests {
             }
             assert_eq!(render(name, body, OutputFormat::Json, false).unwrap(), body);
         }
+    }
+
+    #[test]
+    fn detailed_timestamp_projection_is_humanized_without_changing_json() {
+        let zone = chrono::FixedOffset::east_opt(0).unwrap();
+        let reference = zone.with_ymd_and_hms(2024, 6, 12, 12, 0, 0).unwrap();
+        let body = r#"{"task_id":1,"rule_id":2,"created_at":1718193600000,"duplicate":false}"#;
+        let yaml = render_at("ingest", body, OutputFormat::Yaml, true, reference).unwrap();
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(value["created_at"], "today");
+        assert_eq!(
+            render_at("ingest", body, OutputFormat::Yaml, false, reference).unwrap(),
+            "duplicate: false\nrule_id: 2\ntask_id: 1\n"
+        );
+        assert_eq!(
+            render_at("ingest", body, OutputFormat::Json, true, reference).unwrap(),
+            body
+        );
+
+        let status = r#"{"all_up_to_date":false,"window_days":14,"stale_tasks":[{"id":1,"text":"t","last_revised_at":1717934400000}],"stale_rules":[]}"#;
+        let status_yaml = render_at("status", status, OutputFormat::Yaml, true, reference).unwrap();
+        let status_value: Value = serde_yaml::from_str(&status_yaml).unwrap();
+        assert_eq!(
+            status_value["stale_tasks"][0]["last_revised_at"],
+            "last week"
+        );
     }
 
     #[test]

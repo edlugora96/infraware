@@ -16,6 +16,7 @@
 
 #![deny(unsafe_code)]
 
+mod chrono_format;
 mod command;
 mod dispatch;
 mod embed;
