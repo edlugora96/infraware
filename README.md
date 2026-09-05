@@ -70,7 +70,7 @@ Usage: infraware <COMMAND>
 Commands:
   ingest <TASK_TEXT> <RULE_TEXT>
   query <TASK_TEXT>
-  list [LIMIT] [OFFSET] [--entity rules|tasks|all]
+  list [LIMIT] [OFFSET]
   get <ID> [--entity rules|tasks]
   patch <ID> --text <TEXT> [--entity rules|tasks]
   remove <ID>
@@ -83,12 +83,36 @@ Commands:
 The eight verbs use `<project>/.infraware/vec-index.sqlite`.
 
 - `ingest <TASK_TEXT> <RULE_TEXT>` stores one task and its paired historical rule. It embeds both raw texts independently, reuses nearby canonical task and rule rows, and returns `task_id`, `rule_id`, `created_at`, and `duplicate` after commit.
-- The v2 store has no user metadata or metadata filters. `list [LIMIT] [OFFSET] [--entity rules|tasks|all]`, `get <ID> [--entity rules|tasks]`, and `patch <ID> --text <TEXT> [--entity rules|tasks]` select the entity explicitly. The selector defaults to `rules` for all three commands; `all` is valid only for `list`. `list` returns `total`, `limit`, `offset`, and `records`, while each record and `get` response contains only `id`, `text`, and epoch-millisecond `created_at`.
-- List IDs are scoped to the selected entity. `list --entity all` returns one combined page with rules first, ordered by ascending rule ID, followed by tasks ordered by ascending task ID. An ID lookup never falls through to the other entity. Callers that relied on the old task default must add `--entity tasks`.
+- The v2 store has no user metadata or metadata filters. `list [LIMIT] [OFFSET]` always returns rules and their related tasks. `get <ID> [--entity rules|tasks]` and `patch <ID> --text <TEXT> [--entity rules|tasks]` retain their entity selectors. `list` defaults to a limit of 50 and offset of 0, accepts a maximum limit of 500, and paginates rules only. `total` is the number of rules before pagination.
+
+  Compact YAML is the default:
+
+  ```yaml
+  limit: 50
+  offset: 0
+  rules:
+    - text: Require review before deploy
+      id: 3
+      tasks:
+        - text: Open a review request
+          id: 8
+  total: 1
+  ```
+
+  JSON uses the same grouped fields:
+
+  ```json
+  {"limit":50,"offset":0,"rules":[{"text":"Require review before deploy","id":3,"tasks":[{"text":"Open a review request","id":8}]}],"total":1}
+  ```
+
+  Rules are ordered by `created_at`, then ID. Tasks nested under each rule use the same ordering. A rule with no relation has `tasks: []`, and a task linked to several rules appears under each rule. `--detailed` adds `created_at` and non-null `updated_at` to every rule and task; null `updated_at` fields are omitted.
+
+  Pagination applies to rules, not nested tasks. For example, `infraware list 10 20` returns rules 21 through 30 in order and includes every task related to each returned rule.
+
+  `list --entity ...` is no longer accepted and exits with status 2. This is a breaking change. Replace flat `records` parsing with the grouped `rules` array, and read tasks from each rule's `tasks` array. Task pages are no longer available through `list`; callers that need them must process the nested tasks from rule pages.
 
   ```sh
-  infraware list 10 20 --entity tasks
-  infraware list --entity all
+  infraware list 10 20
   infraware get 3 --entity tasks
   infraware patch 3 --text "new task" --entity tasks
   ```
