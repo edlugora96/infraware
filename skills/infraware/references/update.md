@@ -8,6 +8,6 @@ For an approved replacement, run:
 cargo run -- patch <ID> --text "<TEXT>" --entity rules
 ```
 
-Use `tasks` instead of `rules` for a task. For an approved rule or task removal, use `cargo run -- remove <ID> [--entity rules|tasks]`. The `--entity` selector is optional. For example, use `cargo run -- remove <ID> --entity rules` for a rule, or substitute `tasks` for a task. If omitted, do not infer a default. Remove only specifically approved records.
+Use `tasks` instead of `rules` for a task. For an approved rule or task removal, use `cargo run -- remove <ID> [--entity rules|tasks]`. The `--entity` selector is mandatory. For example, use `cargo run -- remove <ID> --entity rules` for a rule, or substitute `tasks` for a task. Remove only specifically approved records.
 
 If an unchanged record only needs reaffirming, use [Review stale records](stale.md). Report command results accurately.
