@@ -7,8 +7,8 @@
 /// A typed CLI command request.
 ///
 /// Mirrors the exact approved grammar (six SQLite-backed verbs only):
-/// - `ingest <FACT_TEXT> <QUERY_TEXT>`
-/// - `query <TEXT>`
+/// - `ingest <TASK_TEXT> <RULE_TEXT>`
+/// - `query <TASK_TEXT>`
 /// - `list [LIMIT] [OFFSET]`
 /// - `get <ID>`
 /// - `patch <ID> --text <TEXT>`
@@ -19,16 +19,16 @@
 /// usage errors before a `Command` is ever built.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// `ingest <FACT_TEXT> <QUERY_TEXT>` — SQLite write path.
+    /// `ingest <TASK_TEXT> <RULE_TEXT>` — SQLite write path.
     Ingest {
-        /// Canonical fact text, preserved exactly.
-        fact_text: String,
-        /// Canonical paired query text, preserved exactly.
-        query_text: String,
+        /// Canonical task text, preserved exactly.
+        task_text: String,
+        /// Canonical paired rule text, preserved exactly.
+        rule_text: String,
     },
-    /// `query <TEXT>` — read-only retrieval.
+    /// `query <TASK_TEXT>` — read-only retrieval.
     Query {
-        /// Owned query text, preserved exactly.
+        /// Owned task text, preserved exactly.
         text: String,
     },
     /// `list [LIMIT] [OFFSET]` — read-only SQLite fetch.

@@ -1,6 +1,6 @@
-//! Atomic ingest write path. This is the only fact creator.
+//! Atomic ingest write path. This is the only task creator.
 //!
-//! One call ingests exactly one fact/query pair, preserving both text values
+//! One call ingests exactly one task/rule pair, preserving both text values
 //! exactly and writing them atomically. The whole operation fails if any step
 //! fails; argument shape is enforced by the parser before this seam.
 
@@ -18,8 +18,8 @@ pub const INGEST_DIMENSION: u32 = 384;
 #[allow(dead_code, unreachable_pub)]
 #[derive(Debug)]
 pub struct IngestOutput {
-    pub fact_id: i64,
-    pub query_id: i64,
+    pub task_id: i64,
+    pub rule_id: i64,
     pub created_at: i64,
     pub duplicate: bool,
 }
@@ -27,21 +27,15 @@ pub struct IngestOutput {
 #[allow(dead_code, unreachable_pub)]
 pub fn output_json(out: &IngestOutput) -> String {
     format!(
-        "{{\"fact_id\":{},\"query_id\":{},\"created_at\":{},\"duplicate\":{}}}",
-        out.fact_id, out.query_id, out.created_at, out.duplicate
+        "{{\"task_id\":{},\"rule_id\":{},\"created_at\":{},\"duplicate\":{}}}",
+        out.task_id, out.rule_id, out.created_at, out.duplicate
     )
 }
 
 #[allow(dead_code, unreachable_pub)]
 pub trait HashStore {
     fn find_by_hash(&self, hash: &str) -> Result<Option<i64>, LibraryError>;
-    fn insert(
-        &mut self,
-        hash: &str,
-        text: &str,
-        canonical: &str,
-        embedding: &[f32],
-    ) -> Result<i64, LibraryError>;
+    fn insert(&mut self, hash: &str, text: &str, embedding: &[f32]) -> Result<i64, LibraryError>;
 }
 
 #[allow(dead_code, unreachable_pub)]
@@ -54,28 +48,26 @@ pub fn run_in<S: HashStore, E: Embedder>(
     store: &mut S,
     embedder: &E,
     text: &str,
-    _metadata_raw: Option<&str>,
 ) -> Result<IngestOutput, LibraryError> {
     if text.trim().is_empty() {
         return Err(LibraryError::InvalidInput {
             message: "ingest text must not be empty".into(),
         });
     }
-    let canonical = "{}";
     let hash = "";
     if let Some(id) = store.find_by_hash(hash)? {
         return Ok(IngestOutput {
-            fact_id: id,
-            query_id: 0,
+            task_id: id,
+            rule_id: 0,
             created_at: 0,
             duplicate: true,
         });
     }
     let embedding = embedder.embed(text)?;
-    let id = store.insert(hash, text, canonical, &embedding)?;
+    let id = store.insert(hash, text, &embedding)?;
     Ok(IngestOutput {
-        fact_id: id,
-        query_id: 0,
+        task_id: id,
+        rule_id: 0,
         created_at: 0,
         duplicate: false,
     })
@@ -83,7 +75,7 @@ pub fn run_in<S: HashStore, E: Embedder>(
 
 /// Generic operational failure for the ingest model stages (task 5.2).
 ///
-/// Detail-free like the query gate: cache/model paths, download details,
+/// Detail-free like the rule gate: cache/model paths, download details,
 /// and vectors never reach diagnostics. Validation errors keep their
 /// specific messages; only download/load/embed map here. Non-usage, so
 /// the adapter reports status 1 with empty stdout.
@@ -96,24 +88,24 @@ fn operational_err() -> LibraryError {
 /// Production ingest validates text, embeds both inputs, and writes one pair.
 pub(crate) fn run(
     root: &std::path::Path,
-    fact_text: &str,
-    query_text: &str,
+    task_text: &str,
+    rule_text: &str,
 ) -> Result<DispatchOutput, LibraryError> {
-    if fact_text.trim().is_empty() || query_text.trim().is_empty() {
+    if task_text.trim().is_empty() || rule_text.trim().is_empty() {
         return Err(LibraryError::InvalidInput {
             message: "ingest text must not be empty".into(),
         });
     }
     let paths = crate::model_cache::ensure_model_files().map_err(|_| operational_err())?;
     let embedder = crate::embed::BgeEmbedder::load(&paths).map_err(|_| operational_err())?;
-    let fv = embedder.embed(fact_text).map_err(|_| operational_err())?;
-    let qv = embedder.embed(query_text).map_err(|_| operational_err())?;
+    let fv = embedder.embed(task_text).map_err(|_| operational_err())?;
+    let qv = embedder.embed(rule_text).map_err(|_| operational_err())?;
     let mut store = crate::vec_store::SqliteStore::open(root)?;
-    let (fact_id, query_id, created_at, duplicate) =
-        store.insert_pair(fact_text, query_text, &fv, &qv)?;
+    let (task_id, rule_id, created_at, duplicate) =
+        store.insert_pair(task_text, rule_text, &fv, &qv)?;
     let out = IngestOutput {
-        fact_id,
-        query_id,
+        task_id,
+        rule_id,
         created_at,
         duplicate,
     };
@@ -129,21 +121,21 @@ mod tests {
     #[test]
     fn receipt_json_has_exact_v2_fields() {
         let out = IngestOutput {
-            fact_id: 7,
-            query_id: 8,
+            task_id: 7,
+            rule_id: 8,
             created_at: 123,
             duplicate: false,
         };
         assert_eq!(
             output_json(&out),
-            r#"{"fact_id":7,"query_id":8,"created_at":123,"duplicate":false}"#
+            r#"{"task_id":7,"rule_id":8,"created_at":123,"duplicate":false}"#
         );
     }
     #[test]
     fn duplicate_receipt_is_distinct() {
         let out = IngestOutput {
-            fact_id: 7,
-            query_id: 8,
+            task_id: 7,
+            rule_id: 8,
             created_at: 123,
             duplicate: true,
         };
@@ -157,21 +149,21 @@ mod tests {
         let root = std::env::temp_dir().join(format!("infraware-pair-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let mut store = crate::vec_store::SqliteStore::open(&root).unwrap();
-        let fact = vec![1.0f32; INGEST_DIMENSION as usize];
-        let query = vec![0.0f32; INGEST_DIMENSION as usize];
-        let (fact_id, query_id, created_at, duplicate) = store
-            .insert_pair("fact exact", "query exact", &fact, &query)
+        let task = vec![1.0f32; INGEST_DIMENSION as usize];
+        let rule = vec![0.0f32; INGEST_DIMENSION as usize];
+        let (task_id, rule_id, created_at, duplicate) = store
+            .insert_pair("task exact", "rule exact", &task, &rule)
             .unwrap();
         assert!(!duplicate);
-        assert!(fact_id > 0 && query_id > 0 && created_at > 0);
+        assert!(task_id > 0 && rule_id > 0 && created_at > 0);
         drop(store);
         let conn = rusqlite::Connection::open(root.join(".infraware/vec-index.sqlite")).unwrap();
         let row: (String, String, i64) = conn.query_row(
-            "SELECT f.text,q.text,p.created_at FROM facts f JOIN pair_relations p ON p.fact_id=f.fact_id JOIN queries q ON q.query_id=p.query_id WHERE f.fact_id=?1",
-            [fact_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            "SELECT f.text,q.text,p.created_at FROM tasks f JOIN task_rule_relations p ON p.task_id=f.task_id JOIN rules q ON q.rule_id=p.rule_id WHERE f.task_id=?1",
+            [task_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         ).unwrap();
-        assert_eq!(row.0, "fact exact");
-        assert_eq!(row.1, "query exact");
+        assert_eq!(row.0, "task exact");
+        assert_eq!(row.1, "rule exact");
         assert_eq!(row.2, created_at);
         let schema: Vec<String> = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -181,44 +173,44 @@ mod tests {
             .map(|row| row.unwrap())
             .collect();
         for table in [
-            "facts",
-            "queries",
-            "fact_vecs",
-            "query_vecs",
-            "pair_relations",
+            "tasks",
+            "rules",
+            "task_vecs",
+            "rule_vecs",
+            "task_rule_relations",
             "model_meta",
         ] {
             assert!(schema.iter().any(|name| name == table), "missing {table}");
         }
-        let fact_columns: Vec<String> = conn
-            .prepare("PRAGMA table_info(facts)")
+        let task_columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(tasks)")
             .unwrap()
             .query_map([], |row| row.get(1))
             .unwrap()
             .map(|row| row.unwrap())
             .collect();
-        assert_eq!(fact_columns, ["fact_id", "text", "created_at"]);
+        assert_eq!(task_columns, ["task_id", "text", "created_at"]);
         let relation: (i64, i64, i64) = conn
             .query_row(
-                "SELECT fact_id,query_id,created_at FROM pair_relations",
+                "SELECT task_id,rule_id,created_at FROM task_rule_relations",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
-        assert_eq!(relation, (fact_id, query_id, created_at));
+        assert_eq!(relation, (task_id, rule_id, created_at));
         assert_eq!(
-            conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM fact_vecs", [], |r| r.get(0))
+            conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM task_vecs", [], |r| r.get(0))
                 .unwrap(),
             1
         );
         assert_eq!(
-            conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM query_vecs", [], |r| r.get(0))
+            conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM rule_vecs", [], |r| r.get(0))
                 .unwrap(),
             1
         );
         assert!(
             conn.query_row::<i64, _, _>(
-                "SELECT COUNT(*) FROM facts WHERE text LIKE '%metadata%'",
+                "SELECT COUNT(*) FROM tasks WHERE text LIKE '%metadata%'",
                 [],
                 |r| r.get(0)
             )
@@ -235,7 +227,7 @@ mod tests {
         let mut store = crate::vec_store::SqliteStore::open(&root).unwrap();
         let vector = vec![1.0f32; INGEST_DIMENSION as usize];
         let first = store
-            .insert_pair("canonical fact", "canonical query", &vector, &vector)
+            .insert_pair("canonical task", "canonical rule", &vector, &vector)
             .unwrap();
         let second = store
             .insert_pair("different spelling", "different question", &vector, &vector)
@@ -250,15 +242,15 @@ mod tests {
     #[test]
     fn receipt_contains_only_four_fields() {
         let receipt = output_json(&IngestOutput {
-            fact_id: 3,
-            query_id: 4,
+            task_id: 3,
+            rule_id: 4,
             created_at: 5,
             duplicate: false,
         });
         let value: serde_json::Value = serde_json::from_str(&receipt).unwrap();
         assert_eq!(value.as_object().unwrap().len(), 4);
-        assert_eq!(value["fact_id"], 3);
-        assert_eq!(value["query_id"], 4);
+        assert_eq!(value["task_id"], 3);
+        assert_eq!(value["rule_id"], 4);
         assert_eq!(value["created_at"], 5);
         assert_eq!(value["duplicate"], false);
     }

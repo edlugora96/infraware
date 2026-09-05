@@ -111,23 +111,23 @@ where
     Ok(Command::List { limit, offset })
 }
 
-/// Parse `ingest <FACT_TEXT> <QUERY_TEXT>` with exactly two positionals.
+/// Parse `ingest <TASK_TEXT> <RULE_TEXT>` with exactly two positionals.
 fn parse_ingest<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
 where
     I: Iterator<Item = &'a String>,
 {
-    let fact_text = iter.next().ok_or_else(|| LibraryError::InvalidInput {
-        message: "ingest requires <FACT_TEXT> <QUERY_TEXT>".to_string(),
+    let task_text = iter.next().ok_or_else(|| LibraryError::InvalidInput {
+        message: "ingest requires <TASK_TEXT> <RULE_TEXT>".to_string(),
     })?;
-    let query_text = iter.next().ok_or_else(|| LibraryError::InvalidInput {
-        message: "ingest requires <FACT_TEXT> <QUERY_TEXT>".to_string(),
+    let rule_text = iter.next().ok_or_else(|| LibraryError::InvalidInput {
+        message: "ingest requires <TASK_TEXT> <RULE_TEXT>".to_string(),
     })?;
-    if fact_text.starts_with("--") || query_text.starts_with("--") {
+    if task_text.starts_with("--") || rule_text.starts_with("--") {
         return Err(LibraryError::InvalidInput {
             message: "ingest text cannot be an option".to_string(),
         });
     }
-    if fact_text.trim().is_empty() || query_text.trim().is_empty() {
+    if task_text.trim().is_empty() || rule_text.trim().is_empty() {
         return Err(LibraryError::InvalidInput {
             message: "ingest text must not be empty".to_string(),
         });
@@ -138,23 +138,23 @@ where
         });
     }
     Ok(Command::Ingest {
-        fact_text: fact_text.clone(),
-        query_text: query_text.clone(),
+        task_text: task_text.clone(),
+        rule_text: rule_text.clone(),
     })
 }
 
-/// Parse `query <TEXT>` with exactly one positional argument and no flags.
+/// Parse `query <TASK_TEXT>` with exactly one positional argument and no flags.
 /// Text must be non-blank and is otherwise preserved byte-exactly.
 fn parse_query<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
 where
     I: Iterator<Item = &'a String>,
 {
     let text = iter.next().ok_or_else(|| LibraryError::InvalidInput {
-        message: "query requires <TEXT>".to_string(),
+        message: "query requires <TASK_TEXT>".to_string(),
     })?;
     if text.starts_with("--") || text.trim().is_empty() {
         return Err(LibraryError::InvalidInput {
-            message: "query requires non-empty <TEXT>".to_string(),
+            message: "query requires non-empty <TASK_TEXT>".to_string(),
         });
     }
     if let Some(extra) = iter.next() {

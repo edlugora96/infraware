@@ -265,13 +265,13 @@ pub(crate) fn ensure_model_files() -> Result<ModelPaths, LibraryError> {
     ensure_with(ureq_fetch)
 }
 
-/// Cached-only accessor for the query path (OpenSpec 5.1).
+/// Cached-only accessor for the rule path (OpenSpec 5.1).
 ///
 /// Validates the existing pinned cache/manifest/files and returns the
 /// validated model paths. Never accepts a fetcher, never touches the
 /// network (`ureq`), and never downloads, warms, repairs, or mutates
 /// directories: it resolves the cache dir and runs read-only validation.
-/// Ingest keeps using [`ensure_model_files`]; this function is query-only.
+/// Ingest keeps using [`ensure_model_files`]; this function is rule-only.
 /// Exposing this is safe: [`validate_final`] performs read-only size/hash
 /// and manifest checks with no FFI, no writes, and no I/O outside the
 /// cache directory reads.

@@ -4,10 +4,7 @@ use crate::{
     ingest::{HashStore, INGEST_MODEL, INGEST_MODEL_REVISION},
 };
 use rusqlite::OptionalExtension;
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 fn er(x: impl std::fmt::Display) -> LibraryError {
     LibraryError::Io {
         message: x.to_string(),
@@ -86,9 +83,9 @@ impl SqliteStore {
     }
     fn init(&mut self) -> Result<(), LibraryError> {
         let tx = self.conn.transaction().map_err(er)?;
-        tx.execute_batch("PRAGMA foreign_keys=ON;CREATE TABLE facts(fact_id INTEGER PRIMARY KEY AUTOINCREMENT,text TEXT NOT NULL,created_at INTEGER NOT NULL);CREATE TABLE queries(query_id INTEGER PRIMARY KEY AUTOINCREMENT,text TEXT NOT NULL,created_at INTEGER NOT NULL);CREATE VIRTUAL TABLE fact_vecs USING vec0(embedding float[384] distance_metric=cosine);CREATE VIRTUAL TABLE query_vecs USING vec0(embedding float[384] distance_metric=cosine);CREATE TABLE pair_relations(fact_id INTEGER REFERENCES facts(fact_id),query_id INTEGER REFERENCES queries(query_id),created_at INTEGER,PRIMARY KEY(fact_id,query_id));CREATE TABLE model_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);").map_err(er)?;
+        tx.execute_batch("PRAGMA foreign_keys=ON;CREATE TABLE tasks(task_id INTEGER PRIMARY KEY AUTOINCREMENT,text TEXT NOT NULL,created_at INTEGER NOT NULL);CREATE TABLE rules(rule_id INTEGER PRIMARY KEY AUTOINCREMENT,text TEXT NOT NULL,created_at INTEGER NOT NULL);CREATE VIRTUAL TABLE task_vecs USING vec0(embedding float[384] distance_metric=cosine);CREATE VIRTUAL TABLE rule_vecs USING vec0(embedding float[384] distance_metric=cosine);CREATE TABLE task_rule_relations(task_id INTEGER REFERENCES tasks(task_id),rule_id INTEGER REFERENCES rules(rule_id),created_at INTEGER,PRIMARY KEY(task_id,rule_id));CREATE TABLE model_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);").map_err(er)?;
         for (k, v) in [
-            ("schema_version", "2"),
+            ("schema_version", "1"),
             ("model", INGEST_MODEL),
             ("revision", INGEST_MODEL_REVISION),
             ("dimension", "384"),
@@ -106,11 +103,11 @@ impl SqliteStore {
     }
     pub(crate) fn verify_query_compatible(&self) -> Result<(), LibraryError> {
         let expected = [
-            "facts",
-            "queries",
-            "fact_vecs",
-            "query_vecs",
-            "pair_relations",
+            "tasks",
+            "rules",
+            "task_vecs",
+            "rule_vecs",
+            "task_rule_relations",
             "model_meta",
         ];
         let tables = self
@@ -124,7 +121,7 @@ impl SqliteStore {
         for table in &tables {
             let canonical = expected.iter().any(|name| name == table);
             let sqlite_sequence = table == "sqlite_sequence";
-            let vec_shadow = ["fact_vecs", "query_vecs"].iter().any(|prefix| {
+            let vec_shadow = ["task_vecs", "rule_vecs"].iter().any(|prefix| {
                 [
                     "_chunks",
                     "_rowids",
@@ -146,7 +143,7 @@ impl SqliteStore {
         {
             return Err(er("index incompatible"));
         }
-        for t in ["fact_vecs", "query_vecs"] {
+        for t in ["task_vecs", "rule_vecs"] {
             let s: String = self
                 .conn
                 .query_row("SELECT sql FROM sqlite_master WHERE name=?1", [t], |r| {
@@ -158,7 +155,6 @@ impl SqliteStore {
             }
         }
         for (k, v) in [
-            ("schema_version", "2"),
             ("model", INGEST_MODEL),
             ("revision", INGEST_MODEL_REVISION),
             ("dimension", "384"),
@@ -206,34 +202,34 @@ impl SqliteStore {
             }
             Ok(best.map(|(_, id)| id))
         };
-        let fi = match nearest("fact_vecs", fv)? {
+        let fi = match nearest("task_vecs", fv)? {
             Some(id) => id,
             None => {
                 tx.execute(
-                    "INSERT INTO facts(text,created_at)VALUES(?1,?2)",
+                    "INSERT INTO tasks(text,created_at)VALUES(?1,?2)",
                     rusqlite::params![f, t],
                 )
                 .map_err(er)?;
                 let id = tx.last_insert_rowid();
                 tx.execute(
-                    "INSERT INTO fact_vecs(rowid,embedding)VALUES(?1,?2)",
+                    "INSERT INTO task_vecs(rowid,embedding)VALUES(?1,?2)",
                     rusqlite::params![id, enc(fv)],
                 )
                 .map_err(er)?;
                 id
             }
         };
-        let qi = match nearest("query_vecs", qv)? {
+        let qi = match nearest("rule_vecs", qv)? {
             Some(id) => id,
             None => {
                 tx.execute(
-                    "INSERT INTO queries(text,created_at)VALUES(?1,?2)",
+                    "INSERT INTO rules(text,created_at)VALUES(?1,?2)",
                     rusqlite::params![q, t],
                 )
                 .map_err(er)?;
                 let id = tx.last_insert_rowid();
                 tx.execute(
-                    "INSERT INTO query_vecs(rowid,embedding)VALUES(?1,?2)",
+                    "INSERT INTO rule_vecs(rowid,embedding)VALUES(?1,?2)",
                     rusqlite::params![id, enc(qv)],
                 )
                 .map_err(er)?;
@@ -242,7 +238,7 @@ impl SqliteStore {
         };
         let existing: Option<i64> = tx
             .query_row(
-                "SELECT created_at FROM pair_relations WHERE fact_id=?1 AND query_id=?2",
+                "SELECT created_at FROM task_rule_relations WHERE task_id=?1 AND rule_id=?2",
                 rusqlite::params![fi, qi],
                 |r| r.get(0),
             )
@@ -253,110 +249,83 @@ impl SqliteStore {
             return Ok((fi, qi, created, true));
         }
         tx.execute(
-            "INSERT INTO pair_relations VALUES(?1,?2,?3)",
+            "INSERT INTO task_rule_relations VALUES(?1,?2,?3)",
             rusqlite::params![fi, qi, t],
         )
         .map_err(er)?;
         tx.commit().map_err(er)?;
         Ok((fi, qi, t, false))
     }
-    pub(crate) fn read_fact_text(&self, id: i64) -> Result<String, LibraryError> {
+    pub(crate) fn read_task_text(&self, id: i64) -> Result<String, LibraryError> {
         self.conn
-            .query_row("SELECT text FROM facts WHERE fact_id=?1", [id], |r| {
+            .query_row("SELECT text FROM tasks WHERE task_id=?1", [id], |r| {
                 r.get(0)
             })
             .map_err(er)
     }
-    pub(crate) fn read_fact(&self, id: i64) -> Result<(String, i64), LibraryError> {
+    pub(crate) fn read_task(&self, id: i64) -> Result<(String, i64), LibraryError> {
         self.conn
             .query_row(
-                "SELECT text,created_at FROM facts WHERE fact_id=?1",
+                "SELECT text,created_at FROM tasks WHERE task_id=?1",
                 [id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(er)
     }
-    pub(crate) fn insert_query_for_fact(
+    pub(crate) fn insert_task_for_rule(
         &mut self,
-        fact_id: i64,
-        query_text: &str,
-        query_embedding: &[f32],
+        task_text: &str,
+        task_embedding: &[f32],
+        rule_id: i64,
     ) -> Result<(), LibraryError> {
         let tx = self.conn.transaction().map_err(er)?;
         let t = now();
-        let mut st = tx
-            .prepare("SELECT rowid,embedding FROM query_vecs")
-            .map_err(er)?;
-        let mut nearest = None;
-        let rows = st
-            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
-            .map_err(er)?;
-        for row in rows {
-            let (id, bytes) = row.map_err(er)?;
-            let d = crate::query::cosine_distance(query_embedding, &dec(&bytes)?);
-            if d <= 0.15
-                && nearest
-                    .as_ref()
-                    .is_none_or(|(best, best_id)| (d, id) < (*best, *best_id))
-            {
-                nearest = Some((d, id));
-            }
-        }
-        drop(st);
-        let query_id = if let Some((_, id)) = nearest {
-            id
-        } else {
-            tx.execute(
-                "INSERT INTO queries(text,created_at)VALUES(?1,?2)",
-                rusqlite::params![query_text, t],
-            )
-            .map_err(er)?;
-            let id = tx.last_insert_rowid();
-            tx.execute(
-                "INSERT INTO query_vecs(rowid,embedding)VALUES(?1,?2)",
-                rusqlite::params![id, enc(query_embedding)],
-            )
-            .map_err(er)?;
-            id
-        };
         tx.execute(
-            "INSERT OR IGNORE INTO pair_relations VALUES(?1,?2,?3)",
-            rusqlite::params![fact_id, query_id, t],
+            "INSERT INTO tasks(text,created_at)VALUES(?1,?2)",
+            rusqlite::params![task_text, t],
+        )
+        .map_err(er)?;
+        let task_id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO task_vecs(rowid,embedding)VALUES(?1,?2)",
+            rusqlite::params![task_id, enc(task_embedding)],
+        )
+        .map_err(er)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO task_rule_relations VALUES(?1,?2,?3)",
+            rusqlite::params![task_id, rule_id, t],
         )
         .map_err(er)?;
         tx.commit().map_err(er)
     }
     pub(crate) fn created_at(&self, id: i64) -> Result<i64, LibraryError> {
         self.conn
-            .query_row("SELECT created_at FROM facts WHERE fact_id=?1", [id], |r| {
+            .query_row("SELECT created_at FROM tasks WHERE task_id=?1", [id], |r| {
                 r.get(0)
             })
             .map_err(er)
     }
-    pub(crate) fn list_records(&self) -> Result<Vec<(i64, String, String, i64)>, LibraryError> {
+    pub(crate) fn list_records(&self) -> Result<Vec<(i64, String, i64)>, LibraryError> {
         let mut s = self
             .conn
-            .prepare("SELECT fact_id,text,'{}',created_at FROM facts ORDER BY fact_id")
+            .prepare("SELECT task_id,text,created_at FROM tasks ORDER BY task_id")
             .map_err(er)?;
-        s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .map_err(er)?
             .map(|x| x.map_err(er))
             .collect()
     }
-    pub(crate) fn read_record(
-        &self,
-        id: i64,
-    ) -> Result<(BTreeMap<String, String>, String), LibraryError> {
-        Ok((BTreeMap::new(), self.read_fact(id)?.0))
+    pub(crate) fn read_record(&self, id: i64) -> Result<String, LibraryError> {
+        self.read_task(id).map(|(text, _)| text)
     }
     pub(crate) fn remove_record(&mut self, id: i64) -> Result<(), LibraryError> {
         let tx = self.conn.transaction().map_err(er)?;
-        tx.execute("DELETE FROM pair_relations WHERE fact_id=?1", [id])
+        tx.execute("DELETE FROM task_rule_relations WHERE task_id=?1", [id])
             .map_err(er)?;
-        tx.execute("DELETE FROM fact_vecs WHERE rowid=?1", [id])
+        tx.execute("DELETE FROM task_vecs WHERE rowid=?1", [id])
             .map_err(er)?;
         if tx
-            .execute("DELETE FROM facts WHERE fact_id=?1", [id])
+            .execute("DELETE FROM tasks WHERE task_id=?1", [id])
             .map_err(er)?
             != 1
         {
@@ -373,18 +342,18 @@ impl SqliteStore {
         let tx = self.conn.transaction().map_err(er)?;
         if tx
             .execute(
-                "UPDATE facts SET text=?1 WHERE fact_id=?2",
+                "UPDATE tasks SET text=?1 WHERE task_id=?2",
                 rusqlite::params![text, id],
             )
             .map_err(er)?
             != 1
         {
-            return Err(er("missing fact"));
+            return Err(er("missing task"));
         };
         if let Some(v) = v {
             let mut candidate = None;
             let mut st = tx
-                .prepare("SELECT rowid,embedding FROM fact_vecs WHERE rowid<>?1")
+                .prepare("SELECT rowid,embedding FROM task_vecs WHERE rowid<>?1")
                 .map_err(er)?;
             let rows = st
                 .query_map([id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
@@ -403,21 +372,21 @@ impl SqliteStore {
             drop(st);
             if let Some((_, canonical)) = candidate {
                 tx.execute(
-                    "UPDATE OR IGNORE pair_relations SET fact_id=?1 WHERE fact_id=?2",
+                    "UPDATE OR IGNORE task_rule_relations SET task_id=?1 WHERE task_id=?2",
                     rusqlite::params![canonical, id],
                 )
                 .map_err(er)?;
-                tx.execute("DELETE FROM pair_relations WHERE fact_id=?1", [id])
+                tx.execute("DELETE FROM task_rule_relations WHERE task_id=?1", [id])
                     .map_err(er)?;
-                tx.execute("DELETE FROM fact_vecs WHERE rowid=?1", [id])
+                tx.execute("DELETE FROM task_vecs WHERE rowid=?1", [id])
                     .map_err(er)?;
-                tx.execute("DELETE FROM facts WHERE fact_id=?1", [id])
+                tx.execute("DELETE FROM tasks WHERE task_id=?1", [id])
                     .map_err(er)?;
             } else {
-                tx.execute("DELETE FROM fact_vecs WHERE rowid=?1", [id])
+                tx.execute("DELETE FROM task_vecs WHERE rowid=?1", [id])
                     .map_err(er)?;
                 tx.execute(
-                    "INSERT INTO fact_vecs(rowid,embedding)VALUES(?1,?2)",
+                    "INSERT INTO task_vecs(rowid,embedding)VALUES(?1,?2)",
                     rusqlite::params![id, enc(v)],
                 )
                 .map_err(er)?;
@@ -426,13 +395,10 @@ impl SqliteStore {
         tx.commit().map_err(er)
     }
     #[allow(dead_code)]
-    pub(crate) fn scan_filtered_embeddings(
-        &self,
-        _: &BTreeMap<String, String>,
-    ) -> Result<Vec<(i64, Vec<f32>)>, LibraryError> {
+    pub(crate) fn scan_filtered_embeddings(&self) -> Result<Vec<(i64, Vec<f32>)>, LibraryError> {
         let mut s = self
             .conn
-            .prepare("SELECT rowid,embedding FROM fact_vecs")
+            .prepare("SELECT rowid,embedding FROM task_vecs")
             .map_err(er)?;
         s.query_map([], |r| Ok((r.get(0)?, r.get::<_, Vec<u8>>(1)?)))
             .map_err(er)?
@@ -445,7 +411,7 @@ impl SqliteStore {
     pub(crate) fn historical_query_candidates(
         &self,
     ) -> Result<Vec<QueryCandidateRow>, LibraryError> {
-        let mut s=self.conn.prepare("SELECT q.query_id,p.fact_id,p.created_at,v.embedding,f.text FROM queries q JOIN query_vecs v ON v.rowid=q.query_id JOIN pair_relations p ON p.query_id=q.query_id JOIN facts f ON f.fact_id=p.fact_id").map_err(er)?;
+        let mut s = self.conn.prepare("SELECT q.rule_id,p.task_id,p.created_at,v.embedding,q.text FROM rules q JOIN task_rule_relations p ON p.rule_id=q.rule_id JOIN task_vecs v ON v.rowid=p.task_id").map_err(er)?;
         s.query_map([], |r| {
             Ok((
                 r.get(0)?,
@@ -467,16 +433,16 @@ impl HashStore for SqliteStore {
     fn find_by_hash(&self, _: &str) -> Result<Option<i64>, LibraryError> {
         Ok(None)
     }
-    fn insert(&mut self, _: &str, t: &str, _: &str, v: &[f32]) -> Result<i64, LibraryError> {
+    fn insert(&mut self, _: &str, t: &str, v: &[f32]) -> Result<i64, LibraryError> {
         let tx = self.conn.transaction().map_err(er)?;
         tx.execute(
-            "INSERT INTO facts(text,created_at)VALUES(?1,?2)",
+            "INSERT INTO tasks(text,created_at)VALUES(?1,?2)",
             rusqlite::params![t, now()],
         )
         .map_err(er)?;
         let id = tx.last_insert_rowid();
         tx.execute(
-            "INSERT INTO fact_vecs(rowid,embedding)VALUES(?1,?2)",
+            "INSERT INTO task_vecs(rowid,embedding)VALUES(?1,?2)",
             rusqlite::params![id, enc(v)],
         )
         .map_err(er)?;

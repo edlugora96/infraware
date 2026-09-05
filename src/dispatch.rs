@@ -42,21 +42,17 @@ pub struct DispatchOutput {
 pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, LibraryError> {
     match command {
         Command::Ingest {
-            fact_text,
-            query_text,
-        } => ingest::run(root, &fact_text, &query_text),
+            task_text,
+            rule_text,
+        } => ingest::run(root, &task_text, &rule_text),
         // Task 2.3: `query` execution seam. The arm only routes the owned
         // parser payload to `query::run`; behavior stays deferred to tasks
         // 3.x-6.x. The stub returns a non-usage operational error, so `run`
         // maps it to status 1 with empty stdout (never usage status 2).
-        Command::Query { text } => {
-            crate::query::run(root, &text, &std::collections::BTreeMap::new())
-        }
+        Command::Query { text } => crate::query::run(root, &text),
         // Read-only SQLite verbs through the thin records cores: direct
         // point fetch (`get`) and ascending-id snapshot scan (`list`).
-        Command::List { limit, offset } => {
-            crate::records::list(root, &std::collections::BTreeMap::new(), limit, offset)
-        }
+        Command::List { limit, offset } => crate::records::list(root, limit, offset),
         Command::Get { id } => crate::records::get(root, &id),
         Command::Patch { id, text } => crate::patch::run(root, &id, text.as_deref()),
         Command::Remove { id } => {

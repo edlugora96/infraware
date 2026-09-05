@@ -14,7 +14,6 @@
 //! single detail-free operational error so the adapter reports status 1 with
 //! empty stdout and one `error:` line on stderr.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::dispatch::DispatchOutput;
@@ -23,7 +22,7 @@ use crate::format::OutputFormat;
 
 /// Generic operational failure for the get/list read paths.
 ///
-/// Detail-free like the query/ingest/remove gates: storage paths, SQL, and
+/// Detail-free like the rule/ingest/remove gates: storage paths, SQL, and
 /// record contents never reach diagnostics. Non-usage, so the adapter
 /// reports status 1 with empty stdout. The distinct record-not-found error
 /// passes through unchanged.
@@ -72,13 +71,13 @@ pub(crate) fn get(root: &Path, id_raw: &str) -> Result<DispatchOutput, LibraryEr
     })
 }
 
-/// Point-fetch one record's text, canonical metadata, and creation time.
+/// Point-fetch one record's text and creation time.
 ///
 /// A missing row is the distinct [`LibraryError::MissingDefinition`]; every
 /// other failure is the redacted operational error.
 fn read_one(store: &crate::vec_store::SqliteStore, id: i64) -> Result<FetchedRecord, LibraryError> {
     let text = match store.read_record(id) {
-        Ok((_, text)) => text,
+        Ok(text) => text,
         Err(LibraryError::MissingDefinition { .. }) => {
             return Err(LibraryError::MissingDefinition { id: id.to_string() });
         }
@@ -125,7 +124,6 @@ fn output_list_json(page: &ListedPage) -> String {
 /// exceed the contract.
 pub(crate) fn list(
     root: &Path,
-    _filter: &BTreeMap<String, String>,
     limit: usize,
     offset: usize,
 ) -> Result<DispatchOutput, LibraryError> {
@@ -136,7 +134,7 @@ pub(crate) fn list(
     };
     let rows = store.list_records().map_err(|_| operational_err())?;
     let mut records = Vec::new();
-    for (id, text, _canonical, created_at) in rows {
+    for (id, text, created_at) in rows {
         records.push(FetchedRecord {
             id,
             text,
@@ -156,23 +154,6 @@ pub(crate) fn list(
         format: OutputFormat::Json,
         body: output_list_json(&page),
     })
-}
-
-/// Parse a stored canonical metadata blob back into byte-ordered map form.
-///
-/// A malformed blob is an internal error mapped to the redacted operational
-/// error by the caller.
-#[allow(dead_code)]
-fn parse_canonical(canonical: &str) -> Result<BTreeMap<String, String>, LibraryError> {
-    let value: serde_json::Value =
-        serde_json::from_str(canonical).map_err(|_| operational_err())?;
-    let obj = value.as_object().ok_or_else(operational_err)?;
-    let mut map = BTreeMap::new();
-    for (k, v) in obj {
-        let vs = v.as_str().ok_or_else(operational_err)?;
-        map.insert(k.clone(), vs.to_string());
-    }
-    Ok(map)
 }
 
 #[cfg(test)]

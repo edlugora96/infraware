@@ -19,7 +19,7 @@ use crate::format::OutputFormat;
 
 /// Generic operational failure for the remove path.
 ///
-/// Detail-free like the query/ingest gates: storage paths, SQL, and
+/// Detail-free like the rule/ingest gates: storage paths, SQL, and
 /// vectors never reach diagnostics. Non-usage, so the adapter reports
 /// status 1 with empty stdout. Record-not-found keeps its distinct error.
 fn operational_err() -> LibraryError {
@@ -95,9 +95,7 @@ mod tests {
     fn seed_one(root: &Path) -> i64 {
         let mut store = crate::vec_store::SqliteStore::open(root).unwrap();
         let emb = vec![0.5f32; INGEST_DIMENSION as usize];
-        store
-            .insert("rm-seed", "hello", r#"{"a":"1"}"#, &emb)
-            .unwrap()
+        store.insert("rm-seed", "hello", &emb).unwrap()
     }
 
     #[test]
