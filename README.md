@@ -60,7 +60,27 @@ No internal updater. To update: `npm install -g github:edlugora96/infraware#<new
 
 ### CLI (SQLite semantic-search verbs)
 
-The eight verbs are `ingest`, `query`, `list`, `get`, `patch`, `remove`, `status`, and `revise`. They use `<project>/.infraware/vec-index.sqlite`.
+Bare `infraware` and `infraware --help` print the same compact help text. `infraware --version` prints `infraware ` followed by the version from Cargo's `CARGO_PKG_VERSION`, then a newline. The informational forms do not read or create `.infraware` files.
+
+The accepted command grammar is:
+
+```
+Usage: infraware <COMMAND>
+
+Commands:
+  ingest <TASK_TEXT> <RULE_TEXT>
+  query <TASK_TEXT>
+  list [LIMIT] [OFFSET] [--entity rules|tasks|all]
+  get <ID> [--entity rules|tasks]
+  patch <ID> --text <TEXT> [--entity rules|tasks]
+  remove <ID>
+  status
+  revise <ID> --entity rules|tasks
+```
+
+`-h`, `-V`, `help`, and command-specific help such as `query --help` are unsupported and return a usage error.
+
+The eight verbs use `<project>/.infraware/vec-index.sqlite`.
 
 - `ingest <TASK_TEXT> <RULE_TEXT>` stores one task and its paired historical rule. It embeds both raw texts independently, reuses nearby canonical task and rule rows, and returns `task_id`, `rule_id`, `created_at`, and `duplicate` after commit.
 - The v2 store has no user metadata or metadata filters. `list [LIMIT] [OFFSET] [--entity rules|tasks|all]`, `get <ID> [--entity rules|tasks]`, and `patch <ID> --text <TEXT> [--entity rules|tasks]` select the entity explicitly. The selector defaults to `rules` for all three commands; `all` is valid only for `list`. `list` returns `total`, `limit`, `offset`, and `records`, while each record and `get` response contains only `id`, `text`, and epoch-millisecond `created_at`.
