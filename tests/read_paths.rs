@@ -113,10 +113,10 @@ fn list_end_to_end_formats_grouped_fields_and_streams() {
         assert_one_stdout_newline(&output);
         if format == "yaml" {
             let value: serde_yaml::Value = serde_yaml::from_str(&output).unwrap();
-            assert_eq!(value["rules"][0]["created_at"], 10);
+            assert_eq!(value["rules"][0]["created_at"], "56 years ago");
             assert!(value["rules"][0].get("updated_at").is_none());
             assert_eq!(value["rules"][1]["updated_at"], 22);
-            assert_eq!(value["rules"][1]["tasks"][0]["created_at"], 5);
+            assert_eq!(value["rules"][1]["tasks"][0]["created_at"], "56 years ago");
             assert!(value["rules"][1]["tasks"][0].get("updated_at").is_none());
             assert_eq!(value["rules"][1]["tasks"][1]["updated_at"], 31);
         } else {
