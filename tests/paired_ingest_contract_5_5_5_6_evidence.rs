@@ -17,7 +17,7 @@ fn query_uses_historical_vectors_and_collapses_to_nearest_link() {
     assert!(v.contains("JOIN task_rule_relations p"));
     for required in [
         "historical_query_candidates",
-        "if d <= QUERY_MAX_DISTANCE",
+        "if d <= max_distance",
         "best.insert(rule_id",
         "task_id < x.1",
         "then_with(|| a.0.cmp(&b.0))",
@@ -51,7 +51,7 @@ fn patch_recomputes_vectors_and_atomically_merges_all_owned_links() {
     for required in [
         "UPDATE tasks SET text",
         "SELECT rowid,embedding FROM task_vecs WHERE rowid<>?1",
-        "if distance <= 0.15",
+        "if distance <= threshold",
         "UPDATE OR IGNORE task_rule_relations",
         "UPDATE OR IGNORE task_rule_relations",
         "DELETE FROM task_vecs WHERE rowid=?1",

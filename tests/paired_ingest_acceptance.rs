@@ -65,7 +65,9 @@ fn pair_relation_and_history_retention_are_explicit() {
 #[test]
 fn dedup_is_nearest_then_id_and_inclusive_at_threshold() {
     let s = store_source();
-    assert!(s.contains("if d <= 0.15"));
+    assert!(s.contains("if d <= threshold"));
+    assert!(s.contains("nearest(\"task_vecs\", fv, task_threshold)"));
+    assert!(s.contains("nearest(\"rule_vecs\", qv, rule_threshold)"));
     assert!(s.contains("(d, id) < (b.0, b.1)"));
     assert!(
         s.contains("SELECT created_at FROM task_rule_relations WHERE task_id=?1 AND rule_id=?2")
@@ -79,7 +81,11 @@ fn ingest_embeds_fact_and_query_independently_before_persistence() {
     assert!(s.contains("embedder.embed(task_text)"));
     assert!(s.contains("embedder.embed(rule_text)"));
     assert!(!s.contains("format!(\"{}{}\", task_text, rule_text)"));
-    assert!(s.contains("store.insert_pair(task_text, rule_text, &fv, &qv)"));
+    assert!(
+        s.contains("store.insert_pair(")
+            && s.contains("settings.task_dedup")
+            && s.contains("settings.rule_dedup")
+    );
     assert!(s.contains("map_err(|_| operational_err())"));
 }
 
@@ -92,6 +98,7 @@ fn atomic_write_and_safe_failure_mapping_are_visible_at_the_storage_seam() {
     assert!(s.matches(".map_err(er)?").count() >= 12);
     let q = fs::read_to_string("src/query.rs").expect("query source is present");
     assert!(q.contains("then_with(|| a.0.cmp(&b.0))"));
-    assert!(q.contains("if d <= QUERY_MAX_DISTANCE"));
+    assert!(q.contains("if d <= max_distance"));
+    assert!(q.contains("settings.query_max"));
     assert!(q.contains("insert_task_for_rule(text, &query_embedding, top_rule_id)"));
 }
