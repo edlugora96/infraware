@@ -8,11 +8,11 @@ use std::fmt;
 /// projection; it is never a canonical storage format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum OutputFormat {
-    /// Machine-readable JSON projection (the default).
-    #[default]
-    Json,
     /// Output-only YAML (never canonical storage).
+    #[default]
     Yaml,
+    /// Machine-readable JSON projection.
+    Json,
 }
 
 impl fmt::Display for OutputFormat {
@@ -44,8 +44,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_is_json() {
-        assert_eq!(OutputFormat::default(), OutputFormat::Json);
+    fn default_is_yaml() {
+        assert_eq!(OutputFormat::default(), OutputFormat::Yaml);
     }
 
     #[test]

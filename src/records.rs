@@ -39,6 +39,7 @@ pub(crate) struct FetchedRecord {
     pub(crate) id: i64,
     pub(crate) text: String,
     pub(crate) created_at: i64,
+    pub(crate) entity: Entity,
 }
 
 /// Render the exact compact text-only `get` JSON:
@@ -95,6 +96,7 @@ fn read_one(
         id,
         text,
         created_at,
+        entity,
     })
 }
 
@@ -118,7 +120,17 @@ fn output_list_json(page: &ListedPage) -> String {
         if i > 0 {
             out.push(',');
         }
-        out.push_str(&output_get_json(record));
+        out.push_str(&format!(
+            "{{\"id\":{},\"text\":{},\"created_at\":{},\"entity\":{}}}",
+            record.id,
+            serde_json::to_string(&record.text).expect("text"),
+            record.created_at,
+            serde_json::to_string(match record.entity {
+                Entity::Rules => "rule",
+                Entity::Tasks => "task",
+            })
+            .expect("type")
+        ));
     }
     out.push_str("]}");
     out
@@ -155,11 +167,12 @@ pub(crate) fn list(
         .list_entities(&entities)
         .map_err(|_| operational_err())?;
     let mut records = Vec::new();
-    for (id, text, created_at) in rows {
+    for (id, text, created_at, entity) in rows {
         records.push(FetchedRecord {
             id,
             text,
             created_at,
+            entity,
         });
     }
     // Snapshot-consistent total: full filtered count before paging. Rows
@@ -188,6 +201,7 @@ mod tests {
             id: 7,
             text: "canonical".into(),
             created_at: 42,
+            entity: Entity::Rules,
         });
         let value: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(value.as_object().unwrap().len(), 3);
@@ -206,11 +220,13 @@ mod tests {
                     id: 2,
                     text: "b".into(),
                     created_at: 2,
+                    entity: Entity::Rules,
                 },
                 FetchedRecord {
                     id: 3,
                     text: "c".into(),
                     created_at: 3,
+                    entity: Entity::Rules,
                 },
             ],
         };

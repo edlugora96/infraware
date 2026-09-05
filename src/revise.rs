@@ -23,6 +23,6 @@ pub(crate) fn run(
     store.revise(entity, id)?;
     Ok(DispatchOutput {
         format: OutputFormat::Json,
-        body: format!(r#"{{"id":{},"revised":true}}"#, id),
+        body: format!(r#"{{"id":{id},"revised":true}}"#),
     })
 }

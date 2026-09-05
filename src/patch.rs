@@ -40,7 +40,7 @@ pub(crate) trait MutationStore {
         text: &str,
         embedding: Option<&[f32]>,
         threshold: f64,
-    ) -> Result<(), LibraryError>;
+    ) -> Result<bool, LibraryError>;
 }
 impl MutationStore for crate::vec_store::SqliteStore {
     fn read_entity_text(&self, entity: Entity, id: i64) -> Result<String, LibraryError> {
@@ -53,7 +53,7 @@ impl MutationStore for crate::vec_store::SqliteStore {
         text: &str,
         embedding: Option<&[f32]>,
         threshold: f64,
-    ) -> Result<(), LibraryError> {
+    ) -> Result<bool, LibraryError> {
         crate::vec_store::SqliteStore::apply_patch(self, entity, id, text, embedding, threshold)
     }
 }
@@ -63,11 +63,15 @@ impl MutationStore for crate::vec_store::SqliteStore {
 pub(crate) struct PatchOutcome {
     pub(crate) id: i64,
     pub(crate) patched: bool,
+    pub(crate) duplicate: bool,
 }
 
 /// Render the exact compact success JSON: `{"id":N,"patched":true|false}`.
 fn output_json(out: &PatchOutcome) -> String {
-    format!("{{\"id\":{},\"patched\":{}}}", out.id, out.patched)
+    format!(
+        "{{\"id\":{},\"patched\":{},\"duplicate\":{}}}",
+        out.id, out.patched, out.duplicate
+    )
 }
 
 struct ValidatedPatch {
@@ -124,17 +128,25 @@ fn execute_patch<S: MutationStore>(
     threshold: f64,
 ) -> Result<PatchOutcome, LibraryError> {
     match plan_patch(s, v)? {
-        PatchPlan::NoOp(id) => Ok(PatchOutcome { id, patched: false }),
+        PatchPlan::NoOp(id) => Ok(PatchOutcome {
+            id,
+            patched: false,
+            duplicate: false,
+        }),
         PatchPlan::Change(id, text) => {
             let e = embed(&text).map_err(|x| if x.is_usage() { x } else { operational_err() })?;
-            match s.apply_patch(v.entity, id, &text, Some(&e), threshold) {
-                Ok(()) => {}
+            let duplicate = match s.apply_patch(v.entity, id, &text, Some(&e), threshold) {
+                Ok(value) => value,
                 Err(LibraryError::MissingDefinition { .. }) => {
                     return Err(LibraryError::MissingDefinition { id: id.to_string() });
                 }
                 Err(_) => return Err(operational_err()),
-            }
-            Ok(PatchOutcome { id, patched: true })
+            };
+            Ok(PatchOutcome {
+                id,
+                patched: true,
+                duplicate,
+            })
         }
     }
 }

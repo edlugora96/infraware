@@ -5,8 +5,9 @@
 //! `analyze`, `insert`, `edit`), aliases (`set`, `rm`), and removed legacy
 //! flags (`--format`, `--suggest`) are rejected as usage errors.
 
-use crate::command::{Command, Entity, ListEntity};
+use crate::command::{Command, Entity, Invocation, InvocationOptions, ListEntity};
 use crate::error::LibraryError;
+use crate::format::OutputFormat;
 
 /// Parse an argv slice (excluding the program name) into a typed [`Command`].
 ///
@@ -15,7 +16,34 @@ use crate::error::LibraryError;
 /// verbs (`ingest`, `query`, `list`, `get`, `patch`, `remove`, `status`, `revise`) are accepted;
 /// legacy verbs (`init`, `analyze`, `insert`, `edit`), aliases (`set`, `rm`),
 /// and removed legacy flags (`--format`, `--suggest`) are rejected.
-pub fn parse_args(argv: &[String]) -> Result<Command, LibraryError> {
+pub fn parse_args(argv: &[String]) -> Result<Invocation, LibraryError> {
+    let mut args = argv.to_vec();
+    let mut detailed = false;
+    if args.last().is_some_and(|x| x == "--detailed") {
+        detailed = true;
+        args.pop();
+    }
+    let mut format = OutputFormat::Yaml;
+    if args.len() >= 2 && args[args.len() - 2] == "--format" {
+        format = OutputFormat::parse(&args[args.len() - 1]).ok_or_else(|| {
+            LibraryError::InvalidInput {
+                message: "invalid --format value".into(),
+            }
+        })?;
+        args.truncate(args.len() - 2);
+    } else if args.iter().any(|x| x == "--format" || x == "--detailed") {
+        return Err(LibraryError::InvalidInput {
+            message: "shared options must be trailing".into(),
+        });
+    }
+    let command = parse_command(&args)?;
+    Ok(Invocation {
+        command,
+        options: InvocationOptions { format, detailed },
+    })
+}
+
+fn parse_command(argv: &[String]) -> Result<Command, LibraryError> {
     let mut iter = argv.iter();
 
     let Some(command_token) = iter.next() else {

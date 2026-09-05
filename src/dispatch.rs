@@ -1,6 +1,6 @@
 //! The single caller-independent dispatch boundary.
 
-use crate::command::Command;
+use crate::command::{Command, Invocation};
 use crate::error::LibraryError;
 use crate::format::OutputFormat;
 use crate::ingest;
@@ -40,8 +40,12 @@ pub struct DispatchOutput {
 /// - `status` reports freshness through its existing read path.
 /// - `list`/`get` read through the approved read-only snapshot lane.
 /// - `patch`/`remove`/`revise` mutate through the approved read-write lane.
-pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, LibraryError> {
-    match command {
+pub fn dispatch(invocation: Invocation, root: &Path) -> Result<DispatchOutput, LibraryError> {
+    let format = invocation.options.format;
+    let detailed = invocation.options.detailed;
+    let command = invocation.command;
+    let name = command.name();
+    let mut output = match command {
         Command::Status => {
             let s = crate::settings::load(root)?;
             crate::status::run(root, s)
@@ -80,5 +84,8 @@ pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, Library
             crate::remove::run(root, &id)
         }
         Command::Revise { id, entity } => crate::revise::run(root, &id, entity),
-    }
+    }?;
+    output.body = crate::render::render(name, &output.body, format, detailed)?;
+    output.format = format;
+    Ok(output)
 }

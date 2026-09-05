@@ -28,6 +28,7 @@ mod patch;
 mod query;
 mod records;
 mod remove;
+mod render;
 mod revise;
 mod settings;
 mod staleness;
@@ -35,7 +36,7 @@ mod status;
 mod vec_shim;
 mod vec_store;
 
-pub use command::{Command, Entity, ListEntity};
+pub use command::{Command, Entity, Invocation, InvocationOptions, ListEntity};
 pub use dispatch::{DispatchOutput, dispatch};
 pub use error::LibraryError;
 pub use format::OutputFormat;

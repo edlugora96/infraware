@@ -24,6 +24,13 @@ pub enum ListEntity {
     All,
 }
 
+/// Shared output controls for every verb.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvocationOptions {
+    pub format: crate::format::OutputFormat,
+    pub detailed: bool,
+}
+
 /// A typed CLI command request.
 ///
 /// Mirrors the exact approved grammar (eight SQLite-backed verbs only):
@@ -92,6 +99,12 @@ pub enum Command {
         /// Entity table to revise.
         entity: Entity,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Invocation {
+    pub command: Command,
+    pub options: InvocationOptions,
 }
 
 impl Command {

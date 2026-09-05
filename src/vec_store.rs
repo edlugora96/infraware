@@ -339,7 +339,7 @@ impl SqliteStore {
     pub(crate) fn list_entities(
         &mut self,
         entities: &[crate::command::Entity],
-    ) -> Result<Vec<(i64, String, i64)>, LibraryError> {
+    ) -> Result<Vec<(i64, String, i64, crate::command::Entity)>, LibraryError> {
         let tx = self.conn.transaction().map_err(er)?;
         let mut out = Vec::new();
         for entity in entities {
@@ -356,8 +356,11 @@ impl SqliteStore {
                 .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
                 .map_err(er)?;
             out.extend(
-                rows.map(|row| row.map_err(er))
-                    .collect::<Result<Vec<_>, _>>()?,
+                rows.map(|row| {
+                    row.map(|(id, text, created)| (id, text, created, *entity))
+                        .map_err(er)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
             );
         }
         tx.commit().map_err(er)?;
@@ -459,7 +462,7 @@ impl SqliteStore {
         text: &str,
         v: Option<&[f32]>,
         threshold: f64,
-    ) -> Result<(), LibraryError> {
+    ) -> Result<bool, LibraryError> {
         let tx = self.conn.transaction().map_err(er)?;
         let (table, key, vec_table, rel_key) = match entity {
             crate::command::Entity::Rules => ("rules", "rule_id", "rule_vecs", "rule_id"),
@@ -475,6 +478,7 @@ impl SqliteStore {
         {
             return Err(LibraryError::MissingDefinition { id: id.to_string() });
         };
+        let mut duplicate = false;
         if let Some(v) = v {
             let mut candidate = None;
             let mut st = tx
@@ -497,6 +501,7 @@ impl SqliteStore {
                 }
             }
             drop(st);
+            duplicate = candidate.is_some();
             if let Some((_, canonical)) = candidate {
                 tx.execute(
                     &format!(
@@ -531,7 +536,8 @@ impl SqliteStore {
                 .map_err(er)?;
             }
         }
-        tx.commit().map_err(er)
+        tx.commit().map_err(er)?;
+        Ok(duplicate)
     }
     #[allow(dead_code)]
     pub(crate) fn scan_filtered_embeddings(&self) -> Result<Vec<(i64, Vec<f32>)>, LibraryError> {
