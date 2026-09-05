@@ -1,7 +1,7 @@
-//! `infraware` — caller-agnostic CLI foundation for the six SQLite-backed semantic search verbs.
+//! `infraware` — caller-agnostic CLI foundation for the eight SQLite-backed semantic search verbs.
 //!
 //! This crate establishes the single-package Rust boundary for `ingest`,
-//! `query`, `list`, `get`, `patch`, and `remove` against the SQLite vector
+//! `query`, `list`, `get`, `patch`, `remove`, `status`, and `revise` against the SQLite vector
 //! index. It intentionally contains **no** LLM/network/provider/plugin/workspace/
 //! caller-specific code. Everything reachable from the binary goes through one
 //! dispatch seam.
@@ -28,6 +28,7 @@ mod patch;
 mod query;
 mod records;
 mod remove;
+mod revise;
 mod settings;
 mod staleness;
 mod status;

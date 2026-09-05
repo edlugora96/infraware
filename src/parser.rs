@@ -1,6 +1,6 @@
 //! Stdlib-only exact-argument parser.
 //!
-//! Accepts exactly the approved six-verb grammar and nothing else. No `clap`
+//! Accepts exactly the approved eight-verb grammar and nothing else. No `clap`
 //! or any external crate is used (design D7). Removed legacy verbs (`init`,
 //! `analyze`, `insert`, `edit`), aliases (`set`, `rm`), and removed legacy
 //! flags (`--format`, `--suggest`) are rejected as usage errors.
@@ -11,8 +11,8 @@ use crate::error::LibraryError;
 /// Parse an argv slice (excluding the program name) into a typed [`Command`].
 ///
 /// Returns [`LibraryError::InvalidInput`] for any grammar violation: unknown
-/// command, unknown option, or malformed shape. Only the six SQLite-backed
-/// verbs (`ingest`, `query`, `list`, `get`, `patch`, `remove`) are accepted;
+/// command, unknown option, or malformed shape. Only the eight SQLite-backed
+/// verbs (`ingest`, `query`, `list`, `get`, `patch`, `remove`, `status`, `revise`) are accepted;
 /// legacy verbs (`init`, `analyze`, `insert`, `edit`), aliases (`set`, `rm`),
 /// and removed legacy flags (`--format`, `--suggest`) are rejected.
 pub fn parse_args(argv: &[String]) -> Result<Command, LibraryError> {
@@ -40,6 +40,7 @@ pub fn parse_args(argv: &[String]) -> Result<Command, LibraryError> {
         "get" => parse_get(&mut iter),
         "patch" => parse_patch(&mut iter),
         "remove" => parse_remove(&mut iter),
+        "revise" => parse_revise(&mut iter),
         // Legacy verbs, aliases, and any other token are unknown commands.
         other => Err(LibraryError::InvalidInput {
             message: format!("unknown command: {other}"),
@@ -331,6 +332,45 @@ where
     Ok(Command::Patch {
         id: id.clone(),
         text,
+        entity,
+    })
+}
+
+/// Parse `revise <ID> --entity rules|tasks`.
+fn parse_revise<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
+where
+    I: Iterator<Item = &'a String>,
+{
+    let id = iter.next().ok_or_else(|| LibraryError::InvalidInput {
+        message: "revise requires an <ID>".into(),
+    })?;
+    if id.starts_with("--") {
+        return Err(LibraryError::InvalidInput {
+            message: "revise requires an <ID>".into(),
+        });
+    }
+    let flag = iter.next().ok_or_else(|| LibraryError::InvalidInput {
+        message: "revise requires --entity".into(),
+    })?;
+    if flag != "--entity" {
+        return Err(LibraryError::InvalidInput {
+            message: format!("unknown option for revise: {flag}"),
+        });
+    }
+    let value = iter.next().ok_or_else(|| LibraryError::InvalidInput {
+        message: "--entity requires a value".into(),
+    })?;
+    let entity = match parse_entity_value(value, false, "revise")? {
+        EntityOrList::Single(entity) => entity,
+        EntityOrList::List(_) => unreachable!(),
+    };
+    if iter.next().is_some() {
+        return Err(LibraryError::InvalidInput {
+            message: "unexpected extra argument for revise".into(),
+        });
+    }
+    Ok(Command::Revise {
+        id: id.clone(),
         entity,
     })
 }

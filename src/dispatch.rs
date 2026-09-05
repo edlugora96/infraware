@@ -35,10 +35,11 @@ pub struct DispatchOutput {
 /// store, record-not-found, backend errors) map to status 1 with empty
 /// stdout and one `error:` line on stderr.
 ///
-/// Exactly the six SQLite-backed verbs are routed, each to its thin core:
+/// Exactly the eight SQLite-backed verbs are routed, each to its thin core:
 /// - `ingest`/`query` keep their existing SQLite paths.
+/// - `status` reports freshness through its existing read path.
 /// - `list`/`get` read through the approved read-only snapshot lane.
-/// - `patch`/`remove` mutate through the approved read-write lane.
+/// - `patch`/`remove`/`revise` mutate through the approved read-write lane.
 pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, LibraryError> {
     match command {
         Command::Status => {
@@ -78,5 +79,6 @@ pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, Library
             // storage, and record-not-found rules live in `remove::run`.
             crate::remove::run(root, &id)
         }
+        Command::Revise { id, entity } => crate::revise::run(root, &id, entity),
     }
 }

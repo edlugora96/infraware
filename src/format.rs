@@ -4,11 +4,11 @@ use std::fmt;
 
 /// Output format for structured command data.
 ///
-/// The six SQLite-backed verbs render JSON. YAML remains as an output-only
+/// The SQLite-backed verbs render JSON. YAML remains as an output-only
 /// projection; it is never a canonical storage format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum OutputFormat {
-    /// Machine-readable JSON projection (the six-verb default).
+    /// Machine-readable JSON projection (the default).
     #[default]
     Json,
     /// Output-only YAML (never canonical storage).

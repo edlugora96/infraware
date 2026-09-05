@@ -26,13 +26,15 @@ pub enum ListEntity {
 
 /// A typed CLI command request.
 ///
-/// Mirrors the exact approved grammar (six SQLite-backed verbs only):
+/// Mirrors the exact approved grammar (eight SQLite-backed verbs only):
 /// - `ingest <TASK_TEXT> <RULE_TEXT>`
 /// - `query <TASK_TEXT>`
 /// - `list [LIMIT] [OFFSET]`
 /// - `get <ID>`
 /// - `patch <ID> --text <TEXT>`
 /// - `remove <ID>`
+/// - `status`
+/// - `revise <ID> --entity rules|tasks`
 ///
 /// Removed legacy verbs (`init`, `analyze`, `insert`, `edit`) and aliases
 /// (`set`, `rm`) are not representable here; the parser rejects them as
@@ -83,6 +85,13 @@ pub enum Command {
         /// Target record id (validated to a positive integer at execution).
         id: String,
     },
+    /// `revise <ID> --entity rules|tasks` — timestamp-only touch.
+    Revise {
+        /// Target record id.
+        id: String,
+        /// Entity table to revise.
+        entity: Entity,
+    },
 }
 
 impl Command {
@@ -96,6 +105,7 @@ impl Command {
             Command::Get { .. } => "get",
             Command::Patch { .. } => "patch",
             Command::Remove { .. } => "remove",
+            Command::Revise { .. } => "revise",
         }
     }
 }

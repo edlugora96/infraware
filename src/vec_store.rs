@@ -429,6 +429,29 @@ impl SqliteStore {
         };
         tx.commit().map_err(er)
     }
+    pub(crate) fn revise(
+        &mut self,
+        entity: crate::command::Entity,
+        id: i64,
+    ) -> Result<(), LibraryError> {
+        let (table, key) = match entity {
+            crate::command::Entity::Rules => ("rules", "rule_id"),
+            crate::command::Entity::Tasks => ("tasks", "task_id"),
+        };
+        if self
+            .conn
+            .execute(
+                &format!("UPDATE {table} SET updated_at=?1 WHERE {key}=?2"),
+                rusqlite::params![now(), id],
+            )
+            .map_err(er)?
+            != 1
+        {
+            return Err(LibraryError::MissingDefinition { id: id.to_string() });
+        }
+        Ok(())
+    }
+
     pub(crate) fn apply_patch(
         &mut self,
         entity: crate::command::Entity,
