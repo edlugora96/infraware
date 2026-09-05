@@ -6,6 +6,7 @@ pub(crate) struct Settings {
     pub task_dedup: f64,
     pub rule_dedup: f64,
     pub query_max: f64,
+    pub query_auto_ingest: bool,
     pub staleness_threshold_days: f64,
 }
 impl Default for Settings {
@@ -14,6 +15,7 @@ impl Default for Settings {
             task_dedup: 0.15,
             rule_dedup: 0.15,
             query_max: 0.15,
+            query_auto_ingest: false,
             staleness_threshold_days: 14.0,
         }
     }
@@ -41,16 +43,27 @@ pub(crate) fn load(root: &Path) -> Result<Settings, LibraryError> {
         };
     };
     let mut out = Settings::default();
+    if let Some(v) = root.get("query_auto_ingest") {
+        if !v.is_null() {
+            out.query_auto_ingest = v
+                .as_bool()
+                .ok_or_else(|| err("query_auto_ingest must be a boolean".into()))?;
+        }
+    }
+    let distances = match root.get("distances") {
+        None => None,
+        Some(v) if v.is_null() => None,
+        Some(v) => Some(
+            v.as_mapping()
+                .ok_or_else(|| err("distances must be a mapping".into()))?,
+        ),
+    };
     for (key, slot) in [
         ("task_dedup", &mut out.task_dedup),
         ("rule_dedup", &mut out.rule_dedup),
         ("query_max", &mut out.query_max),
     ] {
-        let Some(v) = root
-            .get("distances")
-            .and_then(Value::as_mapping)
-            .and_then(|m| m.get(Value::String(key.into())))
-        else {
+        let Some(v) = distances.and_then(|m| m.get(Value::String(key.into()))) else {
             continue;
         };
         if v.is_null() {
@@ -110,6 +123,33 @@ mod tests {
         assert_eq!(s.staleness_threshold_days, 14.0);
         let _ = fs::remove_dir_all(p);
     }
+    #[test]
+    fn query_auto_ingest_defaults_and_booleans() {
+        let p = root();
+        assert!(!load(&p).unwrap().query_auto_ingest);
+        put(&p, "query_auto_ingest: null\n");
+        assert!(!load(&p).unwrap().query_auto_ingest);
+        put(&p, "query_auto_ingest: true\n");
+        assert!(load(&p).unwrap().query_auto_ingest);
+        put(&p, "query_auto_ingest: false\n");
+        assert!(!load(&p).unwrap().query_auto_ingest);
+        for body in [
+            "query_auto_ingest: \"true\"\n",
+            "query_auto_ingest: 1\n",
+            "query_auto_ingest: []\n",
+            "query_auto_ingest: {}\n",
+        ] {
+            put(&p, body);
+            match load(&p) {
+                Err(LibraryError::Configuration { message }) => {
+                    assert!(message.contains("query_auto_ingest must be a boolean"));
+                }
+                other => panic!("expected configuration error, got {other:?}"),
+            }
+        }
+        let _ = fs::remove_dir_all(p);
+    }
+
     #[test]
     fn fractional_and_invalid_values() {
         let p = root();

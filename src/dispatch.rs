@@ -58,7 +58,7 @@ pub fn dispatch(command: Command, root: &Path) -> Result<DispatchOutput, Library
         // maps it to status 1 with empty stdout (never usage status 2).
         Command::Query { text } => {
             let s = crate::settings::load(root)?;
-            crate::query::run(root, &text, s)
+            crate::query::run(root, &text, s.query_max, s.query_auto_ingest)
         }
         // Read-only SQLite verbs through the thin records cores: direct
         // point fetch (`get`) and ascending-id snapshot scan (`list`).

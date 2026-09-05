@@ -256,6 +256,7 @@ pub(crate) fn run_with_model_embed(
     resolve: impl FnOnce() -> Result<crate::model_cache::ModelPaths, LibraryError>,
     embed: impl FnOnce(&crate::model_cache::ModelPaths, &str) -> Result<Vec<f32>, LibraryError>,
     max_distance: f64,
+    query_auto_ingest: bool,
 ) -> Result<DispatchOutput, LibraryError> {
     let store = match crate::vec_store::SqliteStore::open_read_only(root) {
         Ok(store) => store,
@@ -319,6 +320,14 @@ pub(crate) fn run_with_model_embed(
         });
     }
 
+    if !query_auto_ingest {
+        let body = render_envelope(text, &hits, max_distance);
+        return Ok(DispatchOutput {
+            format: crate::format::OutputFormat::Json,
+            body,
+        });
+    }
+
     // Retrieval is complete before opening the separate write connection.
     // The snapshot and its SQL borrows are dropped before the RW transaction.
     let top_rule_id = hits[0].id;
@@ -355,7 +364,8 @@ pub(crate) fn run_with_model_embed(
 pub(crate) fn run(
     root: &Path,
     text: &str,
-    settings: crate::settings::Settings,
+    query_max: f64,
+    query_auto_ingest: bool,
 ) -> Result<DispatchOutput, LibraryError> {
     run_with_model_embed(
         root,
@@ -366,6 +376,7 @@ pub(crate) fn run(
             use crate::ingest::Embedder;
             embedder.embed(task_text).map_err(|_| operational_err())
         },
-        settings.query_max,
+        query_max,
+        query_auto_ingest,
     )
 }
