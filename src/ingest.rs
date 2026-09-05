@@ -196,7 +196,18 @@ mod tests {
             .unwrap()
             .map(|row| row.unwrap())
             .collect();
-        assert_eq!(task_columns, ["task_id", "text", "created_at"]);
+        assert_eq!(
+            task_columns,
+            ["task_id", "text", "created_at", "updated_at"]
+        );
+        let updated_at: Option<i64> = conn
+            .query_row(
+                "SELECT updated_at FROM tasks WHERE task_id=?",
+                [task_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(updated_at, None);
         let relation: (i64, i64, i64) = conn
             .query_row(
                 "SELECT task_id,rule_id,created_at FROM task_rule_relations",

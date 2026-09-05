@@ -83,7 +83,7 @@ impl SqliteStore {
     }
     fn init(&mut self) -> Result<(), LibraryError> {
         let tx = self.conn.transaction().map_err(er)?;
-        tx.execute_batch("PRAGMA foreign_keys=ON;CREATE TABLE tasks(task_id INTEGER PRIMARY KEY AUTOINCREMENT,text TEXT NOT NULL,created_at INTEGER NOT NULL);CREATE TABLE rules(rule_id INTEGER PRIMARY KEY AUTOINCREMENT,text TEXT NOT NULL,created_at INTEGER NOT NULL);CREATE VIRTUAL TABLE task_vecs USING vec0(embedding float[384] distance_metric=cosine);CREATE VIRTUAL TABLE rule_vecs USING vec0(embedding float[384] distance_metric=cosine);CREATE TABLE task_rule_relations(task_id INTEGER REFERENCES tasks(task_id),rule_id INTEGER REFERENCES rules(rule_id),created_at INTEGER,PRIMARY KEY(task_id,rule_id));CREATE TABLE model_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);").map_err(er)?;
+        tx.execute_batch("PRAGMA foreign_keys=ON;CREATE TABLE tasks(task_id INTEGER PRIMARY KEY AUTOINCREMENT,text TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NULL);CREATE TABLE rules(rule_id INTEGER PRIMARY KEY AUTOINCREMENT,text TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NULL);CREATE VIRTUAL TABLE task_vecs USING vec0(embedding float[384] distance_metric=cosine);CREATE VIRTUAL TABLE rule_vecs USING vec0(embedding float[384] distance_metric=cosine);CREATE TABLE task_rule_relations(task_id INTEGER REFERENCES tasks(task_id),rule_id INTEGER REFERENCES rules(rule_id),created_at INTEGER,PRIMARY KEY(task_id,rule_id));CREATE TABLE model_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);").map_err(er)?;
         for (k, v) in [
             ("schema_version", "1"),
             ("model", INGEST_MODEL),
@@ -142,6 +142,19 @@ impl SqliteStore {
             .any(|name| !tables.iter().any(|table| table == name))
         {
             return Err(er("index incompatible"));
+        }
+        for owner in ["tasks", "rules"] {
+            let columns = self
+                .conn
+                .prepare(&format!("PRAGMA table_info({owner})"))
+                .map_err(er)?
+                .query_map([], |r| r.get::<_, String>(1))
+                .map_err(er)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(er)?;
+            if !columns.iter().any(|c| c == "updated_at") {
+                return Err(er("index incompatible"));
+            }
         }
         for t in ["task_vecs", "rule_vecs"] {
             let s: String = self
@@ -209,7 +222,7 @@ impl SqliteStore {
             Some(id) => id,
             None => {
                 tx.execute(
-                    "INSERT INTO tasks(text,created_at)VALUES(?1,?2)",
+                    "INSERT INTO tasks(text,created_at,updated_at)VALUES(?1,?2,NULL)",
                     rusqlite::params![f, t],
                 )
                 .map_err(er)?;
@@ -226,7 +239,7 @@ impl SqliteStore {
             Some(id) => id,
             None => {
                 tx.execute(
-                    "INSERT INTO rules(text,created_at)VALUES(?1,?2)",
+                    "INSERT INTO rules(text,created_at,updated_at)VALUES(?1,?2,NULL)",
                     rusqlite::params![q, t],
                 )
                 .map_err(er)?;
@@ -350,6 +363,57 @@ impl SqliteStore {
         tx.commit().map_err(er)?;
         Ok(out)
     }
+    #[cfg(test)]
+    pub(crate) fn insert_status_test_row(
+        &self,
+        table: &str,
+        text: &str,
+        created: i64,
+        updated: Option<i64>,
+    ) -> Result<(), LibraryError> {
+        self.conn
+            .execute(
+                &format!("INSERT INTO {table}(text,created_at,updated_at) VALUES(?1,?2,?3)"),
+                rusqlite::params![text, created, updated],
+            )
+            .map_err(er)?;
+        Ok(())
+    }
+    pub(crate) fn status_rows(
+        &mut self,
+    ) -> Result<
+        (
+            Vec<crate::staleness::FreshnessRow>,
+            Vec<crate::staleness::FreshnessRow>,
+        ),
+        LibraryError,
+    > {
+        let tx = self.conn.transaction().map_err(er)?;
+        let read =
+            |table: &str, key: &str| -> Result<Vec<crate::staleness::FreshnessRow>, LibraryError> {
+                let mut stmt = tx
+                    .prepare(&format!(
+                        "SELECT {key},text,created_at,updated_at FROM {table} ORDER BY {key}"
+                    ))
+                    .map_err(er)?;
+                stmt.query_map([], |r| {
+                    Ok(crate::staleness::FreshnessRow {
+                        id: r.get(0)?,
+                        text: r.get(1)?,
+                        created_at: r.get(2)?,
+                        updated_at: r.get(3)?,
+                    })
+                })
+                .map_err(er)?
+                .map(|r| r.map_err(er))
+                .collect()
+            };
+        let tasks = read("tasks", "task_id")?;
+        let rules = read("rules", "rule_id")?;
+        tx.commit().map_err(er)?;
+        Ok((tasks, rules))
+    }
+
     pub(crate) fn remove_record(&mut self, id: i64) -> Result<(), LibraryError> {
         let tx = self.conn.transaction().map_err(er)?;
         tx.execute("DELETE FROM task_rule_relations WHERE task_id=?1", [id])
@@ -380,8 +444,8 @@ impl SqliteStore {
         };
         if tx
             .execute(
-                &format!("UPDATE {table} SET text=?1 WHERE {key}=?2"),
-                rusqlite::params![text, id],
+                &format!("UPDATE {table} SET text=?1,updated_at=CASE WHEN text<>?1 THEN ?3 ELSE updated_at END WHERE {key}=?2"),
+                rusqlite::params![text, id, now()],
             )
             .map_err(er)?
             != 1
@@ -500,5 +564,131 @@ impl HashStore for SqliteStore {
         .map_err(er)?;
         tx.commit().map_err(er)?;
         Ok(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    fn root() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "infraware-store-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+    #[test]
+    fn fresh_owner_columns_are_nullable() {
+        let p = root();
+        let s = SqliteStore::open(&p).unwrap();
+        for table in ["tasks", "rules"] {
+            let (n,t):(i64,String)=s.conn.query_row(&format!("SELECT \"notnull\", \"type\" FROM pragma_table_info('{table}') WHERE name='updated_at'"),[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+            assert_eq!(n, 0);
+            assert_eq!(t, "INTEGER");
+        }
+        drop(s);
+        let _ = std::fs::remove_dir_all(p);
+    }
+    #[test]
+    fn old_store_is_rejected_without_repair() {
+        let p = root();
+        std::fs::create_dir_all(p.join(".infraware")).unwrap();
+        let db = rusqlite::Connection::open(p.join(".infraware/vec-index.sqlite")).unwrap();
+        db.execute_batch("CREATE TABLE tasks(task_id INTEGER PRIMARY KEY,text TEXT NOT NULL,created_at INTEGER NOT NULL); CREATE TABLE rules(rule_id INTEGER PRIMARY KEY,text TEXT NOT NULL,created_at INTEGER NOT NULL); CREATE TABLE task_vecs(x); CREATE TABLE rule_vecs(x); CREATE TABLE task_rule_relations(x); CREATE TABLE model_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);").unwrap();
+        drop(db);
+        assert!(SqliteStore::open_read_only(&p).is_err());
+        let db = rusqlite::Connection::open(p.join(".infraware/vec-index.sqlite")).unwrap();
+        let n: i64 = db
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('tasks') WHERE name='updated_at'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0);
+        let _ = std::fs::remove_dir_all(p);
+    }
+}
+
+#[cfg(test)]
+mod revision_tests {
+    use super::*;
+    use crate::command::Entity;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    fn root() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "infraware-revision-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+    #[test]
+    fn changed_patch_sets_timestamp_and_noop_preserves_it() {
+        let p = root();
+        let mut s = SqliteStore::open(&p).unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO rules(text,created_at,updated_at) VALUES('old',10,NULL)",
+                [],
+            )
+            .unwrap();
+        let id = s.conn.last_insert_rowid();
+        s.apply_patch(Entity::Rules, id, "new", None, 0.).unwrap();
+        let first: i64 = s
+            .conn
+            .query_row("SELECT updated_at FROM rules WHERE rule_id=?", [id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(first >= 10);
+        s.apply_patch(Entity::Rules, id, "new", None, 0.).unwrap();
+        let second: i64 = s
+            .conn
+            .query_row("SELECT updated_at FROM rules WHERE rule_id=?", [id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(first, second);
+        drop(s);
+        let _ = std::fs::remove_dir_all(p);
+    }
+    #[test]
+    fn failed_vector_work_rolls_back_text_and_timestamp() {
+        let p = root();
+        let mut s = SqliteStore::open(&p).unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO tasks(text,created_at,updated_at) VALUES('old',10,NULL)",
+                [],
+            )
+            .unwrap();
+        let id = s.conn.last_insert_rowid();
+        s.conn
+            .execute(
+                "INSERT INTO task_vecs(rowid,embedding) VALUES(?,?)",
+                rusqlite::params![id, vec![0u8; 1536]],
+            )
+            .unwrap();
+        let result = s.apply_patch(Entity::Tasks, id, "new", Some(&[1.0]), 0.);
+        assert!(result.is_err());
+        let text: String = s
+            .conn
+            .query_row("SELECT text FROM tasks WHERE task_id=?", [id], |r| r.get(0))
+            .unwrap();
+        let updated: Option<i64> = s
+            .conn
+            .query_row("SELECT updated_at FROM tasks WHERE task_id=?", [id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(text, "old");
+        assert_eq!(updated, None);
+        drop(s);
+        let _ = std::fs::remove_dir_all(p);
     }
 }
