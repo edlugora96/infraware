@@ -83,9 +83,13 @@ fn list_get_and_remove_are_read_only_or_atomic_and_text_only() {
     let v = source("vec_store");
     for required in [
         "open_read_only",
-        "list_entities",
+        "grouped_rule_page",
+        "SELECT count(*) FROM rules",
+        "ORDER BY created_at ASC",
+        "rule_id ASC LIMIT ?1 OFFSET ?2",
+        "task_rule_relations r JOIN tasks t ON t.task_id=r.task_id",
+        "ORDER BY r.rule_id ASC, t.created_at ASC, t.task_id ASC",
         "read_entity",
-        "skip(offset).take(limit)",
         "created_at",
         "output_get_json",
     ] {

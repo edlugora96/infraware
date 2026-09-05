@@ -1,7 +1,5 @@
 //! Focused v2 six-verb grammar tests.
-use infraware::{
-    Command, EXIT_USAGE, Invocation, InvocationOptions, ListEntity, OutputFormat, run,
-};
+use infraware::{Command, EXIT_USAGE, Invocation, InvocationOptions, OutputFormat, run};
 fn parsed(command: Command) -> Invocation {
     Invocation {
         command,
@@ -58,41 +56,58 @@ fn accepted_shapes() {
         infraware::parse_args(&["list".into(), "2".into(), "1".into()]),
         Ok(parsed(Command::List {
             limit: 2,
-            offset: 1,
-            entity: ListEntity::Rules
+            offset: 1
         }))
     );
-}
-#[test]
-fn entity_selectors_are_typed_and_option_only() {
     assert_eq!(
+        infraware::parse_args(&["list".into(), "999".into()]),
+        Ok(parsed(Command::List {
+            limit: 500,
+            offset: 0
+        }))
+    );
+    assert!(
         infraware::parse_args(&[
             "list".into(),
             "10".into(),
             "20".into(),
-            "--entity".into(),
-            "tasks".into()
-        ]),
-        Ok(parsed(Command::List {
-            limit: 10,
-            offset: 20,
-            entity: ListEntity::Tasks
-        }))
+            "--format".into(),
+            "json".into(),
+            "--detailed".into(),
+        ])
+        .is_ok()
     );
+}
+#[test]
+fn entity_selectors_are_scoped_to_entity_verbs() {
+    for entity in ["rules", "tasks", "all", "missing"] {
+        assert!(
+            infraware::parse_args(&["list".into(), "--entity".into(), entity.into(),]).is_err()
+        );
+    }
     assert!(
-        infraware::parse_args(&["get".into(), "3".into(), "--entity".into(), "all".into()])
-            .is_err()
+        infraware::parse_args(&["get".into(), "3".into(), "--entity".into(), "tasks".into()])
+            .is_ok()
     );
-    assert!(infraware::parse_args(&["list".into(), "rules".into()]).is_err());
     assert!(
         infraware::parse_args(&[
-            "list".into(),
+            "patch".into(),
+            "3".into(),
+            "--text".into(),
+            "x".into(),
             "--entity".into(),
-            "tasks".into(),
+            "tasks".into()
+        ])
+        .is_ok()
+    );
+    assert!(
+        infraware::parse_args(&[
+            "revise".into(),
+            "3".into(),
             "--entity".into(),
             "rules".into()
         ])
-        .is_err()
+        .is_ok()
     );
 }
 #[test]
@@ -117,15 +132,29 @@ fn status_rejects_operands_with_usage_status() {
 }
 
 #[test]
-fn malformed_cli_has_status_two_empty_stdout() {
-    let mut out = Vec::new();
-    let mut err = Vec::new();
-    let s = run(
-        vec!["list".into(), "--format".into(), "json".into(), "1".into()],
-        &mut out,
-        &mut err,
-    );
-    assert_eq!(s, EXIT_USAGE);
-    assert!(out.is_empty());
-    assert_eq!(err.iter().filter(|b| **b == b'\n').count(), 1);
+fn malformed_list_cli_has_status_two_empty_stdout_and_one_diagnostic() {
+    for args in [
+        vec!["list", "--entity", "rules"],
+        vec!["list", "--entity", "tasks"],
+        vec!["list", "--entity", "all"],
+        vec!["list", "--entity", "missing"],
+        vec!["list", "x"],
+        vec!["list", "1", "x"],
+        vec!["list", "1", "2", "3"],
+        vec!["list", "--detailed", "1"],
+        vec!["list", "--format", "json", "1"],
+        vec!["list", "--format", "xml"],
+        vec!["list", "--bogus"],
+    ] {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let status = run(
+            args.iter().map(|arg| (*arg).to_string()),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(status, EXIT_USAGE, "{args:?}");
+        assert!(out.is_empty(), "{args:?}");
+        assert_eq!(err.iter().filter(|b| **b == b'\n').count(), 1, "{args:?}");
+    }
 }

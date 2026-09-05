@@ -1,7 +1,5 @@
 //! v2 CLI contract: exact grammar and stream/status behavior.
-use infraware::{
-    Command, EXIT_USAGE, Entity, Invocation, InvocationOptions, ListEntity, OutputFormat, run,
-};
+use infraware::{Command, EXIT_USAGE, Entity, Invocation, InvocationOptions, OutputFormat, run};
 fn parsed(command: Command) -> Invocation {
     Invocation {
         command,
@@ -36,8 +34,7 @@ fn six_verbs_parse() {
         infraware::parse_args(&["list".into()]),
         Ok(parsed(Command::List {
             limit: 50,
-            offset: 0,
-            entity: ListEntity::Rules
+            offset: 0
         }))
     );
     assert_eq!(
@@ -65,6 +62,17 @@ fn invalid_shapes_are_usage_and_silent_on_stdout() {
         &["patch", "1"],
         &["remove"],
         &["legacy"],
+        &["list", "--entity", "rules"],
+        &["list", "--entity", "tasks"],
+        &["list", "--entity", "all"],
+        &["list", "--entity", "missing"],
+        &["list", "-1"],
+        &["list", "1", "-2"],
+        &["list", "1", "2", "3"],
+        &["list", "--detailed", "1"],
+        &["list", "--format", "json", "1"],
+        &["list", "--format", "xml"],
+        &["list", "--bogus"],
     ] {
         let (o, e, s) = exec(a);
         assert_eq!(s, EXIT_USAGE);

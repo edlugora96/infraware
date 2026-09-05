@@ -7,7 +7,7 @@ use std::sync::{Mutex, MutexGuard};
 
 static CWD_LOCK: Mutex<()> = Mutex::new(());
 
-const HELP: &str = "Usage: infraware <COMMAND>\n\nCommands:\n  ingest <TASK_TEXT> <RULE_TEXT>\n  query <TASK_TEXT>\n  list [LIMIT] [OFFSET] [--entity rules|tasks|all]\n  get <ID> [--entity rules|tasks]\n  patch <ID> --text <TEXT> [--entity rules|tasks]\n  remove <ID>\n  status\n  revise <ID> --entity rules|tasks\n";
+const HELP: &str = "Usage: infraware <COMMAND>\n\nCommands:\n  ingest <TASK_TEXT> <RULE_TEXT>\n  query <TASK_TEXT>\n  list [LIMIT] [OFFSET]\n  get <ID> [--entity rules|tasks]\n  patch <ID> --text <TEXT> [--entity rules|tasks]\n  remove <ID>\n  status\n  revise <ID> --entity rules|tasks\n";
 
 struct TempCwd {
     _lock: MutexGuard<'static, ()>,
