@@ -58,13 +58,12 @@ If your npm version does not support `npx github:` URLs, use the global install 
 
 No internal updater. To update: `npm install -g github:edlugora96/infraware#<new-tag>`
 
-### CLI (SQLite semantic-search verbs only)
+### CLI (SQLite semantic-search verbs)
 
-Six verbs: `ingest`, `query`, `list`, `get`, `patch`, `remove` against `<project>/.infraware/vec-index.sqlite`.
+The six verbs are `ingest`, `query`, `list`, `get`, `patch`, and `remove`. They use `<project>/.infraware/vec-index.sqlite`.
 
-- Failed SQLite writes roll back. Only `ingest` upgrades the schema. Rollback is unsupported; restore an external database backup.
-
-- `ingest` lazily creates the index; `query`/`list`/`get` are read-only and never create, migrate, or repair.
-- `list` defaults: limit 50, max 500, offset 0, ascending id, snapshot-consistent `total`; records carry exactly `id`, `text`, `metadata`, `created_at`.
-- Usage/validation failures exit 2 with empty stdout; missing or incompatible store exits 1 with one `error:` line on stderr.
-- Legacy Markdown verbs (`init`, `analyze`, `insert`, `edit`) and aliases are removed.
+- `ingest <FACT_TEXT> <QUERY_TEXT>` stores one fact and its paired historical query. It embeds both raw texts independently, reuses nearby canonical fact and query rows, and returns `fact_id`, `query_id`, `created_at`, and `duplicate` after commit.
+- The v2 store has no user metadata or metadata filters. `list` and `get` return only IDs, text, and epoch-millisecond timestamps. `patch` accepts `--text` only.
+- Only ingest creates a missing store, and it creates a fresh v2 schema. Other verbs require an existing compatible v2 store and never migrate or repair it.
+- `query <TEXT>` searches historical query embeddings, follows fact/query pair relations, and returns nearest facts first.
+- Failed SQLite writes roll back. Usage and validation failures exit 2 with empty stdout. Store and operational failures exit 1 with empty stdout and one `error:` line on stderr.
