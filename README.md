@@ -60,7 +60,7 @@ No internal updater. To update: `npm install -g github:edlugora96/infraware#<new
 
 ### CLI (SQLite semantic-search verbs)
 
-The seven verbs are `ingest`, `query`, `list`, `get`, `patch`, `remove`, and `status`. They use `<project>/.infraware/vec-index.sqlite`.
+The eight verbs are `ingest`, `query`, `list`, `get`, `patch`, `remove`, `status`, and `revise`. They use `<project>/.infraware/vec-index.sqlite`.
 
 - `ingest <TASK_TEXT> <RULE_TEXT>` stores one task and its paired historical rule. It embeds both raw texts independently, reuses nearby canonical task and rule rows, and returns `task_id`, `rule_id`, `created_at`, and `duplicate` after commit.
 - The v2 store has no user metadata or metadata filters. `list [LIMIT] [OFFSET] [--entity rules|tasks|all]`, `get <ID> [--entity rules|tasks]`, and `patch <ID> --text <TEXT> [--entity rules|tasks]` select the entity explicitly. The selector defaults to `rules` for all three commands; `all` is valid only for `list`. `list` returns `total`, `limit`, `offset`, and `records`, while each record and `get` response contains only `id`, `text`, and epoch-millisecond `created_at`.
@@ -74,6 +74,7 @@ The seven verbs are `ingest`, `query`, `list`, `get`, `patch`, `remove`, and `st
   ```
 - Only ingest creates a missing store, and it creates a fresh schema with informational `schema_version=1`. The fresh schema includes nullable `updated_at` columns on tasks and rules. Other verbs require an existing usable store created with this schema. A store missing either column is unsupported, and the application does not migrate or repair it.
 - `status` reads tasks and rules without changing the store. It reports compact JSON with `all_up_to_date`, `window_days`, `stale_tasks`, and `stale_rules`. Each stale entry contains only `id`, `text`, and `last_revised_at`, an epoch-millisecond timestamp. `last_revised_at` uses `updated_at` when present and `created_at` otherwise. A record is stale only when that timestamp is older than the configured window. Status does not create an index or settings file.
+- `revise <ID> --entity rules|tasks` records an explicit revision touch on one existing selected-entity row. It updates only `updated_at`, including when it is `NULL`, and returns `{"id":N,"revised":true}` after the write succeeds. Usage errors, including a missing or unsupported `--entity`, `--text`, duplicate flags, and unknown flags, exit 2 with empty stdout and one usage diagnostic. Missing records and operational failures exit 1 with empty stdout and one `error:` diagnostic. `revise` affects the freshness reported by `status`, but does not change text, embeddings, vector relations, or entity identity.
 - `query <TASK_TEXT>` searches historical task embeddings, follows task/rule pair relations, and returns nearest tasks first. Query auto-ingest is disabled by default, so a query does not write to the index unless `query_auto_ingest: true` is set.
 - Failed SQLite writes roll back. Usage and validation failures exit 2 with empty stdout. Store and operational failures exit 1 with empty stdout and one `error:` line on stderr.
 
