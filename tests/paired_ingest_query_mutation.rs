@@ -1,4 +1,4 @@
-//! Public acceptance coverage for paired-ingest query/mutation boundaries.
+//! Public acceptance coverage for paired-ingest rule/mutation boundaries.
 //!
 //! These cases exercise the real CLI adapter and SQLite filesystem boundary.
 //! Model-backed success fixtures are intentionally not fabricated here: they
@@ -22,7 +22,7 @@ impl TempCwd {
         let lock = CWD_LOCK.lock().expect("cwd lock");
         let old = std::env::current_dir().expect("current directory");
         let path = std::env::temp_dir().join(format!(
-            "infraware-query-mutation-{}-{}",
+            "infraware-rule-mutation-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

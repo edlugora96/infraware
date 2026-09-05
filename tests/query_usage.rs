@@ -39,7 +39,7 @@ impl TempCwd {
         let _lock = CWD_LOCK.lock().expect("CWD lock poisoned");
         let original = std::env::current_dir().expect("resolve original working directory");
         let temp = std::env::temp_dir().join(format!(
-            "infraware-query-usage-{}-{}",
+            "infraware-rule-usage-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -228,7 +228,7 @@ fn assert_operational_rejected(cwd: &TempCwd, args: &[&str]) {
     assert_operational_output(&cwd._temp, status, &stdout, &stderr);
 }
 
-/// Seed a query-compatible `vec-index.sqlite` under the temp CWD using only
+/// Seed a rule-compatible `vec-index.sqlite` under the temp CWD using only
 /// plain SQLite (no vector extension needed): the query compatibility gate
 /// only reads `sqlite_master` for the `vecs` SQL marker plus the side
 /// tables, index, and six pinned `model_meta` values, and every 7.2 case

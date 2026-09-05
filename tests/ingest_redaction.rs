@@ -88,7 +88,7 @@ fn ingest_model_failure_is_redacted_status_1() {
     let root = TempRoot::new();
     let cache_home = root.poisoned_cache_home();
     let (code, stdout, stderr) =
-        exec_in(&root.path, Some(&cache_home), &["ingest", "hello", "query"]);
+        exec_in(&root.path, Some(&cache_home), &["ingest", "hello", "rule"]);
     assert_eq!(
         code,
         Some(EXIT_FAILURE as i32),
@@ -116,7 +116,7 @@ fn ingest_model_failure_is_redacted_status_1() {
         "cosine".to_string(),
         "SELECT".to_string(),
         "hello".to_string(),
-        "query".to_string(),
+        "rule".to_string(),
     ] {
         assert!(
             !stderr.contains(&leaked),
@@ -128,7 +128,7 @@ fn ingest_model_failure_is_redacted_status_1() {
 #[test]
 fn ingest_blank_text_is_usage_with_empty_stdout() {
     let root = TempRoot::new();
-    let (code, stdout, stderr) = exec_in(&root.path, None, &["ingest", "   ", "query"]);
+    let (code, stdout, stderr) = exec_in(&root.path, None, &["ingest", "   ", "rule"]);
     assert_eq!(
         code,
         Some(EXIT_USAGE as i32),

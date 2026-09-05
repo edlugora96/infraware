@@ -42,14 +42,14 @@ fn run_in(project: &Project, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn paired_parser_preserves_raw_fact_and_query_text() {
-    let fact = r#"{"a":1}"#;
-    let query = "find it exactly";
+fn paired_parser_preserves_raw_fact_and_rule_text() {
+    let task = r#"{"a":1}"#;
+    let rule = "find it exactly";
     assert_eq!(
-        parse_args(&["ingest".into(), fact.into(), query.into()]),
+        parse_args(&["ingest".into(), task.into(), rule.into()]),
         Ok(Command::Ingest {
-            fact_text: fact.into(),
-            query_text: query.into()
+            task_text: task.into(),
+            rule_text: rule.into()
         })
     );
 }
@@ -59,10 +59,10 @@ fn invalid_pair_shapes_are_status_two_silent_and_side_effect_free() {
     let project = Project::new();
     for args in [
         &["ingest"][..],
-        &["ingest", "fact"][..],
-        &["ingest", "fact", "query", "extra"][..],
-        &["ingest", "--fact", "query"][..],
-        &["ingest", "fact", "   "][..],
+        &["ingest", "task"][..],
+        &["ingest", "task", "rule", "extra"][..],
+        &["ingest", "--task", "rule"][..],
+        &["ingest", "task", "   "][..],
     ] {
         let output = run_in(&project, args);
         assert_eq!(output.status.code(), Some(EXIT_USAGE as i32));

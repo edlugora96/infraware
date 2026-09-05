@@ -11,10 +11,10 @@ fn exec(a: &[&str]) -> (Vec<u8>, Vec<u8>, u8) {
 #[test]
 fn six_verbs_parse() {
     assert_eq!(
-        infraware::parse_args(&["ingest".into(), "fact".into(), "query".into()]),
+        infraware::parse_args(&["ingest".into(), "task".into(), "rule".into()]),
         Ok(Command::Ingest {
-            fact_text: "fact".into(),
-            query_text: "query".into()
+            task_text: "task".into(),
+            rule_text: "rule".into()
         })
     );
     assert_eq!(
