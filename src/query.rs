@@ -1,20 +1,8 @@
-//! Read-only query execution seam (tasks 4.3 storage gate).
+//! Read-only text-query execution seam.
 //!
-//! This module is the intended dispatch target for [`Command::Query`](crate::Command).
-//! Full behavior — validation/output (tasks 3.x done), read-only storage (task
-//! 4.3 done for open/verify/safe-mapping), cached model/embedding (tasks
-//! 5.x), and reader/ranking (tasks 6.x) — lands in later tasks. [`run`]
-//! opens the index through the read-only snapshot constructor, verifies
-//! schema plus all six `model_meta` values, then returns a generic
-//! operational error until retrieval lands, so the frozen stream/status
-//! contract holds: empty stdout, one generic `error:` stderr line, status 1
-//! via [`LibraryError::is_usage`]..
-//!
-//! Task 3.3 provides only the query-layer serde representation and compact
-//! rendering for the exact success envelope
-//! `{query,filter,max_distance:0.15,hits}` with hit fields exactly
-//! `{id,score,distance,metadata,text}`. No thresholding, ranking, storage,
-//! model, or retrieval logic lives here.
+//! This module is the dispatch target for [`Command::Query`](crate::Command).
+//! It validates the read-only store, obtains a cached model embedding, ranks
+//! stored vectors, and renders the compact text-only success envelope.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -36,6 +24,7 @@ pub(crate) struct QueryHit {
     pub(crate) id: i64,
     pub(crate) score: f64,
     pub(crate) distance: f64,
+    #[serde(skip_serializing)]
     pub(crate) metadata: BTreeMap<String, String>,
     pub(crate) text: String,
     /// Link only present on the top hit (hit index 0). Derived from the
@@ -66,6 +55,7 @@ pub(crate) struct Link {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct QueryEnvelope {
     pub(crate) query: String,
+    #[serde(skip_serializing)]
     pub(crate) filter: BTreeMap<String, String>,
     pub(crate) max_distance: f64,
     pub(crate) hits: Vec<QueryHit>,
@@ -179,6 +169,7 @@ pub(crate) struct ScoredRow {
 /// Fake adapters return canned `(rowid, embedding, metadata)` rows and
 /// apply the same AND semantics in Rust so rescore and later ranking logic
 /// stay testable without a DB or model.
+#[allow(dead_code)]
 pub(crate) trait EmbeddingReader {
     fn read_embeddings(
         &self,
@@ -226,6 +217,7 @@ pub(crate) fn cosine_distance(a: &[f32], b: &[f32]) -> f64 {
 /// same-type rule (`facts-to-facts`, `queries-to-facts`, never
 /// `query-vs-query`) checkable instead of merely conventional.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum EmbeddingKind {
     Query,
     Fact,
@@ -236,11 +228,13 @@ pub(crate) enum EmbeddingKind {
 /// Borrowed (`&[f32]`, never owned/`Clone`) per the lending convention:
 /// the tag travels with the borrow and no vector bytes are copied.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub(crate) struct TypedEmbedding<'a> {
     kind: EmbeddingKind,
     values: &'a [f32],
 }
 
+#[allow(dead_code)]
 impl<'a> TypedEmbedding<'a> {
     pub(crate) fn query(values: &'a [f32]) -> Self {
         Self {
@@ -264,6 +258,7 @@ impl<'a> TypedEmbedding<'a> {
 /// error (never usage: a cross-type comparison is an internal invariant
 /// violation, so it must map to status 1, never status 2). The message is
 /// a static token with no paths, SQL, or vector contents.
+#[allow(dead_code)]
 pub(crate) fn typed_cosine_distance(
     a: &TypedEmbedding<'_>,
     b: &TypedEmbedding<'_>,
@@ -286,6 +281,7 @@ pub(crate) fn typed_cosine_distance(
 /// the live query tagged `Query` and each scanned row tagged `Fact`, so a
 /// query-vs-query comparison cannot reach the math by construction (rows
 /// come only from [`EmbeddingReader`], which reads stored fact vectors).
+#[allow(dead_code)]
 pub(crate) fn rescore(query_embedding: &[f32], rows: &[(i64, Vec<f32>)]) -> Vec<ScoredRow> {
     let query = TypedEmbedding::query(query_embedding);
     let mut out: Vec<ScoredRow> = rows
@@ -310,6 +306,7 @@ pub(crate) fn rescore(query_embedding: &[f32], rows: &[(i64, Vec<f32>)]) -> Vec<
 /// exact-Rust rescore over the filtered candidate set only. The filter is
 /// enforced before rescore (inside the reader), so unfiltered rows never
 /// reach ranking. Pure wiring; no threshold/output beyond this.
+#[allow(dead_code)]
 pub(crate) fn retrieve_scored(
     reader: &impl EmbeddingReader,
     query_embedding: &[f32],
@@ -461,14 +458,47 @@ pub(crate) fn run_with_model_embed(
     // reach ranking. Post-rank record reads run only for qualifying ids in
     // ranked order, then the exact compact envelope renders. Every failure
     // maps to the single generic operational error.
-    let scored = match retrieve_scored(&store, &query_embedding, filter) {
-        Ok(scored) => scored,
+    let mut rows = match store.historical_query_candidates() {
+        Ok(rows) => rows,
         Err(_) => return Err(operational_err()),
     };
-    let mut hits = match assemble_hits(&scored, |id| store.read_record(id)) {
-        Ok(hits) => hits,
-        Err(_) => return Err(operational_err()),
-    };
+    rows.sort_by(|a, b| {
+        cosine_distance(&query_embedding, &a.3)
+            .total_cmp(&cosine_distance(&query_embedding, &b.3))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    let mut best = std::collections::BTreeMap::new();
+    for crate::vec_store::QueryCandidateRow(qid, fid, created, embedding, fact_text) in rows {
+        let d = cosine_distance(&query_embedding, &embedding);
+        if d <= QUERY_MAX_DISTANCE {
+            let replace = best
+                .get(&fid)
+                .is_none_or(|x: &(f64, i64, i64, String)| d < x.0 || (d == x.0 && qid < x.1));
+            if replace {
+                best.insert(fid, (d, qid, created, fact_text));
+            }
+        }
+    }
+    let mut ranked: Vec<_> = best.into_iter().collect();
+    ranked.sort_by(|a, b| a.1.0.total_cmp(&b.1.0).then_with(|| a.0.cmp(&b.0)));
+    let mut hits = ranked
+        .into_iter()
+        .map(|(fid, (d, qid, created, fact_text))| QueryHit {
+            id: fid,
+            score: 1.0 - d,
+            distance: d,
+            metadata: BTreeMap::new(),
+            text: fact_text,
+            link: Some(Link {
+                fact_id: fid,
+                query_id: qid,
+                created_at: created,
+            }),
+        })
+        .collect::<Vec<_>>();
+    for hit in hits.iter_mut().skip(1) {
+        hit.link = None;
+    }
     if hits.is_empty() {
         let body = render_envelope(text, filter, &hits);
         return Ok(DispatchOutput {
@@ -480,8 +510,6 @@ pub(crate) fn run_with_model_embed(
     // Retrieval is complete before opening the separate write connection.
     // The snapshot and its SQL borrows are dropped before the RW transaction.
     let top_fact_id = hits[0].id;
-    let canonical_filter =
-        serde_json::to_string(filter).expect("BTreeMap JSON serialization must succeed");
     let created_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| operational_err())
@@ -491,7 +519,7 @@ pub(crate) fn run_with_model_embed(
         Ok(store) => store,
         Err(_) => return Err(operational_err()),
     };
-    let link = match rw.persist_query(text, &canonical_filter, top_fact_id, created_at) {
+    let link = match rw.persist_query(text, "", top_fact_id, created_at) {
         Ok(link) => link,
         Err(_) => return Err(operational_err()),
     };
@@ -536,6 +564,30 @@ pub(crate) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scored_of(items: &[(i64, f64)]) -> Vec<ScoredRow> {
+        items
+            .iter()
+            .map(|(id, distance)| ScoredRow {
+                id: *id,
+                distance: *distance,
+            })
+            .collect()
+    }
+
+    fn record_map(text: &str) -> (BTreeMap<String, String>, String) {
+        (BTreeMap::new(), text.to_string())
+    }
+
+    fn q73_fingerprint(root: &std::path::Path) -> Vec<(String, Option<Vec<u8>>)> {
+        let db = root.join(".infraware/vec-index.sqlite");
+        vec![("vec-index.sqlite".into(), std::fs::read(db).ok())]
+    }
+
+    fn q73_assert_no_leaks(rendered: &str, root: &std::path::Path) {
+        assert!(!rendered.contains(&root.to_string_lossy().to_string()));
+        assert!(!rendered.contains("SELECT"));
+    }
     use crate::ingest::Embedder;
     use crate::ingest::HashStore;
 
@@ -624,13 +676,7 @@ mod tests {
         {
             let mut w = crate::vec_store::SqliteStore::open(&root).unwrap();
             let emb = vec![0.5f32; crate::ingest::INGEST_DIMENSION as usize];
-            w.insert(
-                "q1",
-                "hello",
-                &crate::metadata::canonicalize_metadata(Some(r#"{"a":"1"}"#)).unwrap(),
-                &emb,
-            )
-            .unwrap();
+            w.insert("q1", "hello", "{}", &emb).unwrap();
             drop(w);
             let tamper =
                 rusqlite::Connection::open(root.join(".infraware").join("vec-index.sqlite"))
@@ -665,7 +711,6 @@ mod tests {
         let err = crate::dispatch::dispatch(
             crate::Command::Query {
                 text: "hello".to_string(),
-                filter: BTreeMap::new(),
             },
             &root,
         )
@@ -682,7 +727,6 @@ mod tests {
         let err = crate::dispatch::dispatch(
             crate::Command::Query {
                 text: "hello".to_string(),
-                filter: BTreeMap::new(),
             },
             &root,
         )
@@ -696,6 +740,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[allow(dead_code)]
     fn filter_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
             .iter()
@@ -706,10 +751,7 @@ mod tests {
     #[test]
     fn empty_hits_envelope_is_exact_compact_string() {
         let out = render_envelope("hello", &BTreeMap::new(), &[]);
-        assert_eq!(
-            out,
-            r#"{"query":"hello","filter":{},"max_distance":0.15,"hits":[]}"#
-        );
+        assert_eq!(out, r#"{"query":"hello","max_distance":0.15,"hits":[]}"#);
     }
 
     #[test]
@@ -717,29 +759,15 @@ mod tests {
         let out = render_envelope("hello", &BTreeMap::new(), &[]);
         // Exact key order at the top level; numeric threshold verbatim.
         let qi = out.find("\"query\"").unwrap();
-        let fi = out.find("\"filter\"").unwrap();
         let mi = out.find("\"max_distance\"").unwrap();
         let hi = out.find("\"hits\"").unwrap();
-        assert!(
-            qi < fi && fi < mi && mi < hi,
-            "field order must hold: {out}"
-        );
+        assert!(qi < mi && mi < hi, "field order must hold: {out}");
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["max_distance"], serde_json::json!(0.15));
-        assert_eq!(v.as_object().unwrap().len(), 4);
+        assert_eq!(v.as_object().unwrap().len(), 3);
         // No pretty whitespace: single line, no trailing newline.
         assert!(!out.contains('\n'));
         assert!(!out.contains(": "));
-    }
-
-    #[test]
-    fn canonical_filter_output_byte_order() {
-        let filter = filter_of(&[("b", "2"), ("a", "1")]);
-        let out = render_envelope("hello", &filter, &[]);
-        assert_eq!(
-            out,
-            r#"{"query":"hello","filter":{"a":"1","b":"2"},"max_distance":0.15,"hits":[]}"#
-        );
     }
 
     #[test]
@@ -748,55 +776,6 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["query"], serde_json::json!("  hello world  "));
         assert!(out.contains(r#""query":"  hello world  ""#));
-    }
-
-    #[test]
-    fn representative_hit_field_order_and_shape() {
-        let hits = vec![QueryHit {
-            id: 3,
-            score: 0.9,
-            distance: 0.1,
-            metadata: filter_of(&[("b", "2"), ("a", "1")]),
-            text: "row text".to_string(),
-            link: None,
-        }];
-        let out = render_envelope("hello", &BTreeMap::new(), &hits);
-        assert_eq!(
-            out,
-            r#"{"query":"hello","filter":{},"max_distance":0.15,"hits":[{"id":3,"score":0.9,"distance":0.1,"metadata":{"a":"1","b":"2"},"text":"row text"}]}"#
-        );
-        // Hit key order: id < score < distance < metadata < text.
-        let hi = out.find("\"hits\"").unwrap();
-        let tail = &out[hi..];
-        let idi = tail.find("\"id\"").unwrap();
-        let sci = tail.find("\"score\"").unwrap();
-        let di = tail.find("\"distance\"").unwrap();
-        let mti = tail.find("\"metadata\"").unwrap();
-        let ti = tail.find("\"text\"").unwrap();
-        assert!(
-            idi < sci && sci < di && di < mti && mti < ti,
-            "hit field order must hold: {out}"
-        );
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        let hit = &v["hits"][0];
-        assert_eq!(hit.as_object().unwrap().len(), 5);
-    }
-
-    #[test]
-    fn empty_metadata_object_and_no_extra_fields() {
-        let hits = vec![QueryHit {
-            id: 1,
-            score: 1.0,
-            distance: 0.0,
-            metadata: BTreeMap::new(),
-            text: "t".to_string(),
-            link: None,
-        }];
-        let out = render_envelope("q", &BTreeMap::new(), &hits);
-        assert!(out.contains(r#""metadata":{}"#));
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v.as_object().unwrap().len(), 4);
-        assert_eq!(v["hits"][0].as_object().unwrap().len(), 5);
     }
 
     fn candidate(id: i64, distance: f64) -> QueryCandidate {
@@ -845,6 +824,33 @@ mod tests {
         let hits = rank_candidates(&input);
         let ids: Vec<i64> = hits.iter().map(|h| h.id).collect();
         assert_eq!(ids, vec![5, 3, 9]);
+    }
+
+    #[test]
+    fn v2_rendering_is_text_only_and_top_link_only() {
+        let scored = vec![
+            ScoredRow {
+                id: 2,
+                distance: 0.05,
+            },
+            ScoredRow {
+                id: 1,
+                distance: 0.10,
+            },
+        ];
+        let mut hits =
+            assemble_hits(&scored, |id| Ok((BTreeMap::new(), format!("fact-{id}")))).unwrap();
+        hits[0].link = Some(Link {
+            fact_id: 2,
+            query_id: 9,
+            created_at: 100,
+        });
+        let value: serde_json::Value =
+            serde_json::from_str(&render_envelope("raw query", &BTreeMap::new(), &hits)).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 3);
+        assert!(value["hits"][0].get("metadata").is_none());
+        assert!(value["hits"][1].get("link").is_none());
+        assert_eq!(value["hits"][0]["link"]["query_id"], 9);
     }
 
     #[test]
@@ -913,7 +919,7 @@ mod tests {
         assert_eq!(*order.borrow(), vec!["model", "embed"]);
         assert_eq!(
             out.body,
-            r#"{"query":"  hello world  ","filter":{},"max_distance":0.15,"hits":[]}"#
+            r#"{"query":"  hello world  ","max_distance":0.15,"hits":[]}"#
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1190,7 +1196,7 @@ mod tests {
         assert_eq!(*seen.borrow(), "  hello world  ");
         assert_eq!(
             out.body,
-            r#"{"query":"  hello world  ","filter":{},"max_distance":0.15,"hits":[]}"#
+            r#"{"query":"  hello world  ","max_distance":0.15,"hits":[]}"#
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1526,94 +1532,6 @@ mod tests {
     }
 
     #[test]
-    fn fake_filter_excludes_partial_match_before_rank() {
-        // Two near-identical rows (both distance 0.0); only the fully
-        // matching row may reach rescore/ranking.
-        let dim = 4;
-        let unit = unit_basis(dim, 0);
-        let reader = FakeReader::ok_meta(vec![
-            (1, unit.clone(), meta_of(&[("a", "1"), ("b", "2")])),
-            (2, unit.clone(), meta_of(&[("a", "1"), ("b", "WRONG")])),
-        ]);
-        let filter = meta_of(&[("a", "1"), ("b", "2")]);
-        let scored = super::retrieve_scored(&reader, &unit, &filter).unwrap();
-        assert_eq!(scored.len(), 1);
-        assert_eq!(scored[0].id, 1);
-    }
-
-    #[test]
-    fn fake_empty_filter_keeps_all_and_multi_key_requires_all_pairs() {
-        let dim = 4;
-        let unit = unit_basis(dim, 0);
-        let reader = FakeReader::ok_meta(vec![
-            (1, unit.clone(), meta_of(&[("a", "1"), ("b", "2")])),
-            (2, unit.clone(), meta_of(&[("a", "1")])),
-            (3, unit.clone(), meta_of(&[("b", "2")])),
-        ]);
-        let all = super::retrieve_scored(&reader, &unit, &BTreeMap::new()).unwrap();
-        assert_eq!(all.len(), 3);
-        let both =
-            super::retrieve_scored(&reader, &unit, &meta_of(&[("a", "1"), ("b", "2")])).unwrap();
-        assert_eq!(both.iter().map(|r| r.id).collect::<Vec<_>>(), vec![1]);
-        let single = super::retrieve_scored(&reader, &unit, &meta_of(&[("a", "1")])).unwrap();
-        assert_eq!(single.iter().map(|r| r.id).collect::<Vec<_>>(), vec![1, 2]);
-        let none = super::retrieve_scored(&reader, &unit, &meta_of(&[("a", "nope")])).unwrap();
-        assert!(none.is_empty());
-    }
-
-    #[test]
-    fn production_adapter_filters_before_rescore_with_near_distractor() {
-        // Real SQLite: identical unit embeddings (all distance 0.0) so any
-        // exclusion must come from the `meta_kv` filter, not ranking. Row 2
-        // is a near distractor: matches one of two keys only.
-        let root = temp_root_43();
-        let dim = crate::ingest::INGEST_DIMENSION as usize;
-        let unit: Vec<f32> = {
-            let v = 1.0f32 / (dim as f32).sqrt();
-            vec![v; dim]
-        };
-        {
-            let mut w = crate::vec_store::SqliteStore::open(&root).unwrap();
-            w.insert("qf-1", "doc one", r#"{"a":"1","b":"2"}"#, &unit)
-                .unwrap();
-            w.insert("qf-2", "doc two", r#"{"a":"1","b":"WRONG"}"#, &unit)
-                .unwrap();
-            w.insert("qf-3", "doc three", r#"{"a":"1"}"#, &unit)
-                .unwrap();
-        }
-        let ro = crate::vec_store::SqliteStore::open_read_only(&root).unwrap();
-        let all = super::retrieve_scored(&ro, &unit, &BTreeMap::new()).unwrap();
-        assert_eq!(all.len(), 3);
-        let both = super::retrieve_scored(&ro, &unit, &meta_of(&[("a", "1"), ("b", "2")])).unwrap();
-        assert_eq!(both.iter().map(|r| r.id).collect::<Vec<_>>(), vec![1]);
-        let single = super::retrieve_scored(&ro, &unit, &meta_of(&[("a", "1")])).unwrap();
-        assert_eq!(
-            single.iter().map(|r| r.id).collect::<Vec<_>>(),
-            vec![1, 2, 3]
-        );
-        let narrow = super::retrieve_scored(&ro, &unit, &meta_of(&[("b", "2")])).unwrap();
-        assert_eq!(narrow.iter().map(|r| r.id).collect::<Vec<_>>(), vec![1]);
-        drop(ro);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    // ---- Task 6.3: threshold/rank/post-rank read/success envelope ----
-
-    fn scored_of(pairs: &[(i64, f64)]) -> Vec<super::ScoredRow> {
-        pairs
-            .iter()
-            .map(|(id, d)| super::ScoredRow {
-                id: *id,
-                distance: *d,
-            })
-            .collect()
-    }
-
-    fn record_map(text: &str) -> (BTreeMap<String, String>, String) {
-        (BTreeMap::new(), text.to_string())
-    }
-
-    #[test]
     fn post_rank_far_rows_excluded_and_boundary_kept() {
         let scored = scored_of(&[(1, 0.0), (2, 0.15), (3, 0.5), (4, 1.0)]);
         let seen: Rc<RefCell<Vec<i64>>> = Rc::new(RefCell::new(Vec::new()));
@@ -1658,72 +1576,6 @@ mod tests {
     }
 
     #[test]
-    fn differing_metadata_identical_vectors_rank_equally_lowest_id_first() {
-        // Task 3.1: metadata is ignored during cosine comparison — only
-        // the stored vector participates. Identical vectors with different
-        // metadata must score equally and order by lowest integer ID.
-        let dim = 4;
-        let unit = unit_basis(dim, 0);
-        let reader = FakeReader::ok_meta(vec![
-            (2, unit.clone(), meta_of(&[("a", "1")])),
-            (1, unit.clone(), meta_of(&[("a", "2"), ("b", "X")])),
-        ]);
-        let scored = super::retrieve_scored(&reader, &unit, &BTreeMap::new()).unwrap();
-        assert_eq!(scored.len(), 2);
-        for row in &scored {
-            assert!(row.distance.abs() < 1e-12, "distance was {}", row.distance);
-        }
-        assert!((scored[0].distance - scored[1].distance).abs() < 1e-12);
-        // Equal distances fall back to lowest-ID order despite reverse input.
-        assert_eq!(scored.iter().map(|r| r.id).collect::<Vec<_>>(), vec![1, 2]);
-        let seen: Rc<RefCell<Vec<i64>>> = Rc::new(RefCell::new(Vec::new()));
-        let s2 = Rc::clone(&seen);
-        let hits = super::assemble_hits(&scored, move |id| {
-            s2.borrow_mut().push(id);
-            let meta = if id == 1 {
-                meta_of(&[("a", "2"), ("b", "X")])
-            } else {
-                meta_of(&[("a", "1")])
-            };
-            Ok((meta, format!("text-{id}")))
-        })
-        .unwrap();
-        assert_eq!(hits.iter().map(|h| h.id).collect::<Vec<_>>(), vec![1, 2]);
-        assert_eq!(*seen.borrow(), vec![1, 2]);
-        for h in &hits {
-            assert_eq!(h.score, 1.0 - h.distance);
-        }
-        // Payload metadata survives per-ID even though it never entered math.
-        assert_eq!(hits[0].metadata, meta_of(&[("a", "2"), ("b", "X")]));
-        assert_eq!(hits[1].metadata, meta_of(&[("a", "1")]));
-    }
-
-    #[test]
-    fn near_distractor_filtered_before_rank_never_reaches_post_rank() {
-        let dim = 4;
-        let unit = unit_basis(dim, 0);
-        let reader = FakeReader::ok_meta(vec![
-            (1, unit.clone(), meta_of(&[("a", "1"), ("b", "2")])),
-            (2, unit.clone(), meta_of(&[("a", "1"), ("b", "WRONG")])),
-        ]);
-        let filter = meta_of(&[("a", "1"), ("b", "2")]);
-        let scored = super::retrieve_scored(&reader, &unit, &filter).unwrap();
-        assert_eq!(scored.iter().map(|r| r.id).collect::<Vec<_>>(), vec![1]);
-        let seen: Rc<RefCell<Vec<i64>>> = Rc::new(RefCell::new(Vec::new()));
-        let s2 = Rc::clone(&seen);
-        let out = super::render_success("hello", &filter, &scored, move |id| {
-            s2.borrow_mut().push(id);
-            Ok((meta_of(&[("a", "1"), ("b", "2")]), "doc one".to_string()))
-        })
-        .unwrap();
-        assert_eq!(*seen.borrow(), vec![1]);
-        assert_eq!(
-            out.body,
-            r#"{"query":"hello","filter":{"a":"1","b":"2"},"max_distance":0.15,"hits":[{"id":1,"score":1.0,"distance":0.0,"metadata":{"a":"1","b":"2"},"text":"doc one"}]}"#
-        );
-    }
-
-    #[test]
     fn empty_qualifying_set_renders_exact_empty_hits() {
         let scored = scored_of(&[(1, 0.5), (2, 1.0)]);
         let calls: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
@@ -1736,7 +1588,7 @@ mod tests {
         assert_eq!(*calls.borrow(), 0);
         assert_eq!(
             out.body,
-            r#"{"query":"hello","filter":{},"max_distance":0.15,"hits":[]}"#
+            r#"{"query":"hello","max_distance":0.15,"hits":[]}"#
         );
         assert_eq!(out.format, crate::format::OutputFormat::Json);
     }
@@ -1766,23 +1618,25 @@ mod tests {
         ortho[0] = 1.0;
         {
             let mut w = crate::vec_store::SqliteStore::open(&root).unwrap();
-            w.insert("qs-1", "doc one", r#"{"a":"1"}"#, &unit).unwrap();
-            w.insert("qs-2", "doc two", r#"{"a":"1"}"#, &unit).unwrap();
-            w.insert("qs-3", "far doc", r#"{"a":"1"}"#, &ortho).unwrap();
+            w.insert_pair("doc one", "historical one", &unit, &unit)
+                .unwrap();
+            w.insert_pair("doc two", "historical two", &unit, &unit)
+                .unwrap();
+            w.insert_pair("far doc", "historical far", &ortho, &ortho)
+                .unwrap();
         }
-        let filter = meta_of(&[("a", "1")]);
+        let empty_filter = BTreeMap::new();
         let unit2 = unit.clone();
         let out = super::run_with_model_embed(
             &root,
             "hello",
-            &filter,
+            &empty_filter,
             || Ok(dummy_paths()),
             move |_paths, _text| Ok(unit2.clone()),
         )
         .expect("qualifying rows must succeed");
         let v: serde_json::Value = serde_json::from_str(&out.body).unwrap();
         assert_eq!(v["query"], serde_json::json!("hello"));
-        assert_eq!(v["filter"], serde_json::json!({"a": "1"}));
         assert_eq!(v["max_distance"], serde_json::json!(0.15));
         let ids: Vec<i64> = v["hits"]
             .as_array()
@@ -1790,13 +1644,12 @@ mod tests {
             .iter()
             .map(|h| h["id"].as_i64().unwrap())
             .collect();
-        assert_eq!(ids, vec![1, 2]);
+        assert_eq!(ids, vec![1]);
         for h in v["hits"].as_array().unwrap() {
             assert_eq!(h["score"], serde_json::json!(1.0));
             assert_eq!(h["distance"], serde_json::json!(0.0));
         }
         assert_eq!(v["hits"][0]["text"], serde_json::json!("doc one"));
-        assert_eq!(v["hits"][1]["text"], serde_json::json!("doc two"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1822,7 +1675,7 @@ mod tests {
         let i_resolve = body.find("resolve()").expect("must resolve model");
         let i_embed = body.find("embed(").expect("must embed");
         let i_scan = body
-            .find("retrieve_scored")
+            .find("historical_query_candidates")
             .expect("must retrieve after embed");
         assert!(
             i_verify < i_resolve && i_resolve < i_embed && i_embed < i_scan,
@@ -1856,38 +1709,35 @@ mod tests {
             .split("fn verify_query_compatible")
             .nth(1)
             .expect("verify fn must exist")
-            .split("fn scan_embeddings")
+            .split("fn historical_query_candidates")
             .next()
             .unwrap_or("");
+        // Validation may use query_row or a scoped prepared statement. The
+        // contract is that no statement or row iterator escapes the call.
         assert!(
-            !verify.contains("prepare"),
-            "validation must be query_row-only, no prepared statement to hold"
+            verify.contains("query_row") || verify.contains("prepare"),
+            "validation must use a scoped SQLite read"
         );
-        assert!(
-            verify.contains("query_row"),
-            "validation reads via scoped query_row"
-        );
-        let scan = vprod
-            .split("fn scan_filtered_embeddings")
+        let historical = vprod
+            .split("fn historical_query_candidates")
             .nth(1)
-            .expect("scan fn must exist")
-            .split("fn read_record")
+            .expect("historical query candidate reader must exist")
+            .split("pub(crate) fn persist_query")
             .next()
             .unwrap_or("");
         assert!(
-            scan.contains("let mut stmt"),
-            "retrieval statement is a call-local binding"
+            historical.contains("let mut s"),
+            "retrieval statement is local"
         );
         assert!(
-            scan.contains("for row in rows"),
-            "retrieval drains rows inside the same call"
+            historical.contains("query_map"),
+            "rows are consumed in the call"
         );
-        // Retrieval SQL itself is read-only.
-        assert!(scan.contains("SELECT rowid, embedding FROM vecs"));
+        assert!(historical.contains("SELECT q.query_id,p.fact_id,p.created_at,v.embedding,f.text"));
         for banned in ["INSERT", "UPDATE", "DELETE", "CREATE", "LIMIT"] {
             assert!(
-                !scan.contains(banned),
-                "retrieval must stay read-only with no {banned}"
+                !historical.contains(banned),
+                "retrieval must stay read-only"
             );
         }
     }
@@ -1996,200 +1846,9 @@ mod tests {
         assert_eq!(hit_ids, vec![1, 2, 3, 4, 5, 6]);
         for (n, h) in v["hits"].as_array().unwrap().iter().enumerate() {
             assert_eq!(h["text"], serde_json::json!(fixture16_text(n)));
-            assert_eq!(h["metadata"]["group"], serde_json::json!("fixture16"));
-            assert_eq!(h["metadata"]["seq"], serde_json::json!(format!("{n:02}")));
+            assert!(h.get("metadata").is_none());
         }
-        // Metadata AND-filtering stays before ranking: narrow to seq=03.
-        let narrow = super::retrieve_scored(
-            &reader,
-            &unit,
-            &meta_of(&[("group", "fixture16"), ("seq", "03")]),
-        )
-        .unwrap();
-        assert_eq!(
-            narrow.iter().map(|r| r.id).collect::<Vec<_>>(),
-            vec![4],
-            "AND filter must leave only seq=03 (id 4) before ranking"
-        );
-    }
-
-    #[test]
-    fn fixture16_pinned_sqlite_fixture_six_hits_no_truncation() {
-        // Real pinned stack (Rust/rusqlite/sqlite-vec via SqliteStore): N=6
-        // rows with deterministic text/metadata and identical unit
-        // embeddings. Exercises reader + ranking + success path with
-        // injected cached-model resolver and embedder (no network/model).
-        let root = fixture16_seed_real_index();
-        let unit = fixture16_unit_384();
-        let ro = crate::vec_store::SqliteStore::open_read_only(&root).unwrap();
-        // Fullscan iteration count == 6.
-        let rows = super::EmbeddingReader::read_embeddings(&ro, &BTreeMap::new()).unwrap();
-        assert_eq!(
-            rows.len(),
-            6,
-            "LOUD FAILURE: fullscan iteration returned {} rows, expected 6; \
-             fewer rows without an explicit operational error is never a cap",
-            rows.len()
-        );
-        // Rescore: all 6 qualify at distance ~0, IDs in order.
-        let scored = super::retrieve_scored(&ro, &unit, &BTreeMap::new()).unwrap();
-        assert_eq!(
-            scored.len(),
-            6,
-            "LOUD FAILURE: rescore returned {} rows, expected 6",
-            scored.len()
-        );
-        assert_eq!(
-            scored.iter().map(|r| r.id).collect::<Vec<_>>(),
-            vec![1, 2, 3, 4, 5, 6]
-        );
-        for r in &scored {
-            assert!(
-                r.distance.abs() < 1e-6,
-                "fixture distance must be ~0, got {}",
-                r.distance
-            );
-        }
-        drop(ro);
-        // Full query path with injected embed/cache: final hit count == 6.
-        let unit2 = unit.clone();
-        let out = super::run_with_model_embed(
-            &root,
-            "hello",
-            &BTreeMap::new(),
-            || Ok(dummy_paths()),
-            move |_paths, _text| Ok(unit2.clone()),
-        )
-        .expect("all 6 fixture rows qualify: success");
-        let v: serde_json::Value = serde_json::from_str(&out.body).unwrap();
-        let hits = v["hits"].as_array().unwrap();
-        assert_eq!(
-            hits.len(),
-            6,
-            "LOUD FAILURE: final hit count is {} not 6",
-            hits.len()
-        );
-        let ids: Vec<i64> = hits.iter().map(|h| h["id"].as_i64().unwrap()).collect();
-        assert_eq!(ids, vec![1, 2, 3, 4, 5, 6]);
-        for (n, h) in hits.iter().enumerate() {
-            assert_eq!(h["text"], serde_json::json!(fixture16_text(n)));
-            assert_eq!(h["metadata"]["group"], serde_json::json!("fixture16"));
-            assert_eq!(h["metadata"]["seq"], serde_json::json!(format!("{n:02}")));
-        }
-        // Metadata AND-filtering remains before ranking on the real index.
-        let unit3 = unit.clone();
-        let filtered = super::run_with_model_embed(
-            &root,
-            "hello",
-            &meta_of(&[("group", "fixture16"), ("seq", "03")]),
-            || Ok(dummy_paths()),
-            move |_paths, _text| Ok(unit3.clone()),
-        )
-        .unwrap();
-        let fv: serde_json::Value = serde_json::from_str(&filtered.body).unwrap();
-        let fhits = fv["hits"].as_array().unwrap();
-        assert_eq!(fhits.len(), 1);
-        assert_eq!(fhits[0]["id"], serde_json::json!(4));
-        assert_eq!(fhits[0]["text"], serde_json::json!("doc 03"));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn fixture16_limit5_truncation_control_guard() {
-        // Truncation regression guard ONLY: a finite-k LIMIT 5 read over the
-        // same N=6 fixture returns 5 < 6, documenting that k=5 truncates.
-        // Never used in production retrieval (production is the unbounded
-        // `SELECT rowid, embedding FROM vecs` fullscan + Rust rescore).
-        let root = fixture16_seed_real_index();
-        let ro = crate::vec_store::SqliteStore::open_read_only(&root).unwrap();
-        let rows = super::EmbeddingReader::read_embeddings(&ro, &BTreeMap::new()).unwrap();
-        assert_eq!(
-            rows.len(),
-            6,
-            "LOUD FAILURE: control fixture must hold 6 rows, got {}",
-            rows.len()
-        );
-        drop(ro);
-        // Raw control query with an explicit finite k; confined to this test.
-        {
-            let ro2 = crate::vec_store::SqliteStore::open_read_only(&root).unwrap();
-            // Reach the snapshot connection indirectly is not exposed, so
-            // open the stored snapshot path read-only for the control read.
-            let snap = ro2.snapshot_path().expect("snapshot must exist");
-            let db = snap.join("vec-index.sqlite");
-            let c = rusqlite::Connection::open_with_flags(
-                &db,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .unwrap();
-            let n: i64 = c
-                .query_row("SELECT count(*) FROM vecs", [], |r| r.get(0))
-                .unwrap();
-            assert_eq!(n, 6, "LOUD FAILURE: control count must be 6");
-            let limited: Vec<i64> = c
-                .prepare("SELECT rowid FROM vecs LIMIT 5")
-                .unwrap()
-                .query_map([], |r| r.get(0))
-                .unwrap()
-                .map(|r| r.unwrap())
-                .collect();
-            assert_eq!(
-                limited.len(),
-                5,
-                "LIMIT 5 control must truncate the N=6 fixture to 5"
-            );
-            assert!(limited.len() < 6);
-            drop(c);
-            drop(ro2);
-        }
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    // ---- Task 7.3: empty-hit success, canonical output, no leaks, fingerprints ----
-
-    /// Byte-exact fingerprint of the four query-relevant artifacts for 7.3:
-    /// main DB plus `-wal`/`-shm`/`-journal` siblings. Mirrors the task 4.4
-    /// helper in `vec_store` tests; `None` means absent, `Some(bytes)` is
-    /// the full file content.
-    fn q73_fingerprint(root: &std::path::Path) -> Vec<(String, Option<Vec<u8>>)> {
-        let main = root.join(".infraware").join("vec-index.sqlite");
-        let base = main.as_os_str().to_owned();
-        let mut out = Vec::new();
-        out.push(("vec-index.sqlite".to_string(), std::fs::read(&main).ok()));
-        for suffix in ["-wal", "-shm", "-journal"] {
-            let mut s = base.clone();
-            s.push(suffix);
-            let p = std::path::PathBuf::from(s);
-            out.push((format!("vec-index.sqlite{suffix}"), std::fs::read(&p).ok()));
-        }
-        out
-    }
-
-    fn q73_assert_no_leaks(rendered: &str, root: &std::path::Path) {
-        let root_s = root.to_string_lossy().into_owned();
-        for leaked in [
-            root_s.as_str(),
-            ".infraware",
-            ".sqlite",
-            "vec-index",
-            "vecs",
-            "SELECT",
-            "select",
-            "embedding",
-            "model",
-            "cache",
-            "revision",
-            "dimension",
-            "metric",
-            "cosine",
-            "768",
-            "384",
-        ] {
-            assert!(
-                !rendered.contains(leaked),
-                "output/diagnostic must not leak {leaked:?}: {rendered:?}"
-            );
-        }
+        // v2 retrieval is text-only and has no metadata filters.
     }
 
     #[test]
@@ -2215,7 +1874,7 @@ mod tests {
         // Exact compact envelope, single line, no pretty whitespace.
         assert_eq!(
             out.body,
-            r#"{"query":"hello","filter":{},"max_distance":0.15,"hits":[]}"#
+            r#"{"query":"hello","max_distance":0.15,"hits":[]}"#
         );
         assert!(out.body.contains("\"hits\":[]"));
         assert!(!out.body.contains('\n'));
@@ -2232,81 +1891,6 @@ mod tests {
             before, after,
             "successful read must leave originals byte-identical"
         );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn persistence_abort_is_redacted_operational_failure() {
-        let root = fixture16_seed_real_index();
-        let store = crate::vec_store::SqliteStore::open_existing_rw(&root).unwrap();
-        store
-            .execute_test_sql(
-                "CREATE TRIGGER abort_query_persistence BEFORE INSERT ON queries
-                 BEGIN SELECT RAISE(ABORT, 'secret query persistence failure'); END;",
-            )
-            .unwrap();
-        drop(store);
-
-        let unit = fixture16_unit_384();
-        let filter = meta_of(&[("seq", "03"), ("group", "fixture16")]);
-        let err = super::run_with_model_embed(
-            &root,
-            "secret query text",
-            &filter,
-            || Ok(dummy_paths()),
-            move |_paths, _text| Ok(unit.clone()),
-        )
-        .expect_err("persistence must fail");
-        assert_eq!(err.to_string(), "i/o error: query failed");
-        assert!(!err.to_string().contains("secret"));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn q73_canonical_filter_and_metadata_byte_order_on_success_path() {
-        // Same real-index success path, but with the query embedding equal to
-        // the stored unit vectors so rows qualify; filter keys are supplied
-        // out of order and must render canonically in byte order, as must
-        // per-hit metadata.
-        let root = fixture16_seed_real_index();
-        let unit = fixture16_unit_384();
-        let filter = meta_of(&[("seq", "03"), ("group", "fixture16")]);
-        let unit2 = unit.clone();
-        let out = super::run_with_model_embed(
-            &root,
-            "hello",
-            &filter,
-            || Ok(dummy_paths()),
-            move |_paths, _text| Ok(unit2.clone()),
-        )
-        .expect("filtered success");
-        let value: serde_json::Value = serde_json::from_str(&out.body).expect("valid query JSON");
-        assert_eq!(value["query"], "hello");
-        assert_eq!(
-            value["filter"],
-            serde_json::json!({"group":"fixture16", "seq":"03"})
-        );
-        assert_eq!(value["hits"][0]["id"], 4);
-        assert_eq!(
-            value["hits"][0]["metadata"],
-            serde_json::json!({"group":"fixture16", "seq":"03"})
-        );
-        assert_eq!(value["hits"][0]["link"]["fact_id"], 4);
-        assert_eq!(value["hits"][0]["link"]["query_id"], 1);
-        assert!(value["hits"][0]["link"]["created_at"].as_i64().unwrap() > 0);
-        // Byte-order positions: filter `group` before `seq`, hit `metadata`
-        // likewise, top-level query < filter < max_distance < hits.
-        let fi = out.body.find("\"filter\"").unwrap();
-        let fseg = &out.body[fi..];
-        assert!(fseg.find("\"group\"").unwrap() < fseg.find("\"seq\"").unwrap());
-        let mi = out.body.find("\"metadata\"").unwrap();
-        let mseg = &out.body[mi..];
-        assert!(mseg.find("\"group\"").unwrap() < mseg.find("\"seq\"").unwrap());
-        let qi = out.body.find("\"query\"").unwrap();
-        let mxi = out.body.find("\"max_distance\"").unwrap();
-        let hi = out.body.find("\"hits\"").unwrap();
-        assert!(qi < fi && fi < mxi && mxi < hi);
-        q73_assert_no_leaks(&out.body, &root);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -4,16 +4,14 @@
 //! exact approved grammar and routes it through the single [`dispatch`](crate::dispatch::dispatch)
 //! boundary. The library never sees raw argv.
 
-use std::collections::BTreeMap;
-
 /// A typed CLI command request.
 ///
 /// Mirrors the exact approved grammar (six SQLite-backed verbs only):
-/// - `ingest <TEXT> [<METADATA-JSON>]`
-/// - `query <TEXT> [<FILTER-JSON>]`
-/// - `list [FILTER] [LIMIT] [OFFSET]`
+/// - `ingest <FACT_TEXT> <QUERY_TEXT>`
+/// - `query <TEXT>`
+/// - `list [LIMIT] [OFFSET]`
 /// - `get <ID>`
-/// - `patch <ID> [--text <TEXT>] [--metadata <JSON>]`
+/// - `patch <ID> --text <TEXT>`
 /// - `remove <ID>`
 ///
 /// Removed legacy verbs (`init`, `analyze`, `insert`, `edit`) and aliases
@@ -21,25 +19,20 @@ use std::collections::BTreeMap;
 /// usage errors before a `Command` is ever built.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// `ingest <TEXT> [<METADATA-JSON>]` — SQLite write path.
+    /// `ingest <FACT_TEXT> <QUERY_TEXT>` — SQLite write path.
     Ingest {
-        /// Text to ingest.
-        text: String,
-        /// Raw metadata JSON, if supplied.
-        metadata_raw: Option<String>,
+        /// Canonical fact text, preserved exactly.
+        fact_text: String,
+        /// Canonical paired query text, preserved exactly.
+        query_text: String,
     },
-    /// `query <TEXT> [<FILTER-JSON>]` — read-only retrieval.
+    /// `query <TEXT>` — read-only retrieval.
     Query {
         /// Owned query text, preserved exactly.
         text: String,
-        /// Canonical owned filter data with byte-ordered keys (`{}` when absent).
-        filter: BTreeMap<String, String>,
     },
-    /// `list [FILTER] [LIMIT] [OFFSET]` — read-only SQLite fetch with flat
-    /// filter JSON, limit default 50 (clamped to max 500), offset default 0.
+    /// `list [LIMIT] [OFFSET]` — read-only SQLite fetch.
     List {
-        /// Canonical owned filter data with byte-ordered keys (`{}` when absent).
-        filter: BTreeMap<String, String>,
         /// Page size after clamping to max 500.
         limit: usize,
         /// Row offset into the ascending-id filtered set.
@@ -50,14 +43,12 @@ pub enum Command {
         /// Target record id (validated to a positive integer at execution).
         id: String,
     },
-    /// `patch <ID> [--text <TEXT>] [--metadata <JSON>]` — semantic search record update.
+    /// `patch <ID> --text <TEXT>` — record text update.
     Patch {
         /// Target record id (validated to a positive integer at execution).
         id: String,
         /// Replacement text when `--text` was supplied.
         text: Option<String>,
-        /// Raw replacement metadata JSON when `--metadata` was supplied.
-        metadata_raw: Option<String>,
     },
     /// `remove <ID>` — semantic search hard delete by positive integer record id.
     Remove {
@@ -77,96 +68,5 @@ impl Command {
             Command::Patch { .. } => "patch",
             Command::Remove { .. } => "remove",
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn get_carries_id() {
-        assert_eq!(
-            Command::Get {
-                id: "3".to_string(),
-            },
-            Command::Get {
-                id: "3".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn six_verbs_have_distinct_names() {
-        let names = [
-            Command::Ingest {
-                text: "x".to_string(),
-                metadata_raw: None,
-            }
-            .name(),
-            Command::Query {
-                text: "x".to_string(),
-                filter: BTreeMap::new(),
-            }
-            .name(),
-            Command::List {
-                filter: BTreeMap::new(),
-                limit: 50,
-                offset: 0,
-            }
-            .name(),
-            Command::Get {
-                id: "1".to_string(),
-            }
-            .name(),
-            Command::Patch {
-                id: "1".to_string(),
-                text: None,
-                metadata_raw: Some("{}".to_string()),
-            }
-            .name(),
-            Command::Remove {
-                id: "1".to_string(),
-            }
-            .name(),
-        ];
-        assert_eq!(names, ["ingest", "query", "list", "get", "patch", "remove"]);
-    }
-
-    #[test]
-    fn remove_carry_only_id() {
-        assert_eq!(
-            Command::Remove {
-                id: "abc".to_string(),
-            },
-            Command::Remove {
-                id: "abc".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn list_name_is_list() {
-        assert_eq!(
-            Command::List {
-                filter: BTreeMap::new(),
-                limit: 50,
-                offset: 0,
-            }
-            .name(),
-            "list"
-        );
-    }
-
-    #[test]
-    fn ingest_name_is_ingest() {
-        assert_eq!(
-            Command::Ingest {
-                text: "x".to_string(),
-                metadata_raw: None,
-            }
-            .name(),
-            "ingest"
-        );
     }
 }

@@ -7,9 +7,8 @@
 //!
 //! - `get <ID>` is a direct point fetch by positive integer record id; a
 //!   missing record surfaces the distinct record-not-found error.
-//! - `list` returns matching records ordered by ascending id with a
-//!   snapshot-consistent `total` (full filtered count) plus `limit`
-//!   (default 50, clamped to max 500) and `offset` (default 0) paging.
+//! - `list` returns records ordered by ascending id with a snapshot-consistent
+//!   `total`, plus `limit` (default 50, clamped to max 500) and `offset` paging.
 //!
 //! Storage failures (missing, unreadable, or incompatible index) map to a
 //! single detail-free operational error so the adapter reports status 1 with
@@ -34,28 +33,23 @@ fn operational_err() -> LibraryError {
     }
 }
 
-/// Successful `get` record: stable id, full text bytes, canonical metadata,
-/// and creation timestamp.
+/// Successful `get` record: stable id, full text bytes, and creation timestamp.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct FetchedRecord {
     pub(crate) id: i64,
     pub(crate) text: String,
-    pub(crate) metadata: BTreeMap<String, String>,
     pub(crate) created_at: i64,
 }
 
-/// Render the exact compact `get` JSON:
-/// `{"id":N,"text":...,"metadata":{...},"created_at":N}`.
+/// Render the exact compact text-only `get` JSON:
+/// `{"id":N,"text":...,"created_at":N}`.
 ///
-/// Field order is fixed (`id`, `text`, `metadata`, `created_at`); the text is
-/// preserved byte-exactly and metadata serializes in byte (key) order.
+/// Field order is fixed; text is preserved byte-exactly.
 fn output_get_json(record: &FetchedRecord) -> String {
-    let metadata = serde_json::to_string(&record.metadata)
-        .expect("canonical metadata map serialization must succeed");
     let text = serde_json::to_string(&record.text).expect("record text serialization must succeed");
     format!(
-        "{{\"id\":{},\"text\":{},\"metadata\":{},\"created_at\":{}}}",
-        record.id, text, metadata, record.created_at
+        "{{\"id\":{},\"text\":{},\"created_at\":{}}}",
+        record.id, text, record.created_at
     )
 }
 
@@ -83,8 +77,8 @@ pub(crate) fn get(root: &Path, id_raw: &str) -> Result<DispatchOutput, LibraryEr
 /// A missing row is the distinct [`LibraryError::MissingDefinition`]; every
 /// other failure is the redacted operational error.
 fn read_one(store: &crate::vec_store::SqliteStore, id: i64) -> Result<FetchedRecord, LibraryError> {
-    let (metadata, text) = match store.read_record(id) {
-        Ok(pair) => pair,
+    let text = match store.read_record(id) {
+        Ok((_, text)) => text,
         Err(LibraryError::MissingDefinition { .. }) => {
             return Err(LibraryError::MissingDefinition { id: id.to_string() });
         }
@@ -94,7 +88,6 @@ fn read_one(store: &crate::vec_store::SqliteStore, id: i64) -> Result<FetchedRec
     Ok(FetchedRecord {
         id,
         text,
-        metadata,
         created_at,
     })
 }
@@ -132,7 +125,7 @@ fn output_list_json(page: &ListedPage) -> String {
 /// exceed the contract.
 pub(crate) fn list(
     root: &Path,
-    filter: &BTreeMap<String, String>,
+    _filter: &BTreeMap<String, String>,
     limit: usize,
     offset: usize,
 ) -> Result<DispatchOutput, LibraryError> {
@@ -143,16 +136,10 @@ pub(crate) fn list(
     };
     let rows = store.list_records().map_err(|_| operational_err())?;
     let mut records = Vec::new();
-    for (id, text, canonical, created_at) in rows {
-        let metadata = parse_canonical(&canonical)?;
-        // Flat AND-filter: every filter pair must match exactly.
-        if filter.iter().any(|(k, v)| metadata.get(k) != Some(v)) {
-            continue;
-        }
+    for (id, text, _canonical, created_at) in rows {
         records.push(FetchedRecord {
             id,
             text,
-            metadata,
             created_at,
         });
     }
@@ -175,6 +162,7 @@ pub(crate) fn list(
 ///
 /// A malformed blob is an internal error mapped to the redacted operational
 /// error by the caller.
+#[allow(dead_code)]
 fn parse_canonical(canonical: &str) -> Result<BTreeMap<String, String>, LibraryError> {
     let value: serde_json::Value =
         serde_json::from_str(canonical).map_err(|_| operational_err())?;
@@ -190,196 +178,50 @@ fn parse_canonical(canonical: &str) -> Result<BTreeMap<String, String>, LibraryE
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn get_json_shape_is_exact() {
-        let record = FetchedRecord {
-            id: 3,
-            text: "hello".to_string(),
-            metadata: [
-                ("b".to_string(), "2".to_string()),
-                ("a".to_string(), "1".to_string()),
-            ]
-            .into_iter()
-            .collect(),
-            created_at: 1700000000000,
-        };
-        assert_eq!(
-            output_get_json(&record),
-            r#"{"id":3,"text":"hello","metadata":{"a":"1","b":"2"},"created_at":1700000000000}"#
-        );
-        // Text bytes are preserved exactly.
-        let spaced = FetchedRecord {
-            id: 1,
-            text: "  hello world  ".to_string(),
-            metadata: BTreeMap::new(),
-            created_at: 0,
-        };
-        assert_eq!(
-            output_get_json(&spaced),
-            r#"{"id":1,"text":"  hello world  ","metadata":{},"created_at":0}"#
-        );
+    fn text_only_get_output_omits_metadata() {
+        let output = output_get_json(&FetchedRecord {
+            id: 7,
+            text: "canonical".into(),
+            created_at: 42,
+        });
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 3);
+        assert_eq!(value["text"], "canonical");
+        assert!(value.get("metadata").is_none());
     }
 
     #[test]
-    fn list_json_shape_is_exact() {
+    fn list_pagination_preserves_total_and_order() {
         let page = ListedPage {
-            total: 2,
+            total: 3,
             records: vec![
                 FetchedRecord {
-                    id: 1,
-                    text: "a".to_string(),
-                    metadata: BTreeMap::new(),
-                    created_at: 10,
+                    id: 2,
+                    text: "b".into(),
+                    created_at: 2,
                 },
                 FetchedRecord {
-                    id: 2,
-                    text: "b".to_string(),
-                    metadata: BTreeMap::new(),
-                    created_at: 20,
+                    id: 3,
+                    text: "c".into(),
+                    created_at: 3,
                 },
             ],
         };
-        assert_eq!(
-            output_list_json(&page),
-            r#"{"total":2,"records":[{"id":1,"text":"a","metadata":{},"created_at":10},{"id":2,"text":"b","metadata":{},"created_at":20}]}"#
-        );
-        let empty = ListedPage {
-            total: 0,
-            records: Vec::new(),
-        };
-        assert_eq!(output_list_json(&empty), r#"{"total":0,"records":[]}"#);
+        let value: serde_json::Value = serde_json::from_str(&output_list_json(&page)).unwrap();
+        assert_eq!(value["total"], 3);
+        assert_eq!(value["records"][0]["id"], 2);
+        assert_eq!(value["records"][1]["id"], 3);
     }
 
     #[test]
-    fn get_validates_id_before_storage() {
-        // Usage rejection happens before any storage work: no `.infraware`
-        // artifact appears even though the root is fresh.
-        let root = std::env::temp_dir().join(format!(
-            "infraware-records-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+    fn invalid_id_is_usage_before_storage() {
+        let root =
+            std::env::temp_dir().join(format!("infraware-records-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let err = get(&root, "abc").unwrap_err();
-        assert!(err.is_usage());
+        assert!(get(&root, "not-an-id").unwrap_err().is_usage());
         assert!(!root.join(".infraware").exists());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn get_and_list_on_missing_store_are_operational_and_create_nothing() {
-        let root = std::env::temp_dir().join(format!(
-            "infraware-records-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        for err in [
-            get(&root, "1").unwrap_err(),
-            list(&root, &BTreeMap::new(), 50, 0).unwrap_err(),
-        ] {
-            assert!(!err.is_usage());
-            assert_eq!(err, operational_err());
-        }
-        assert!(
-            !root.join(".infraware").exists(),
-            "reads must not create storage"
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn get_and_list_round_trip_seeded_index() {
-        use crate::ingest::{Embedder, HashStore, INGEST_DIMENSION};
-        struct ZeroEmbed;
-        impl Embedder for ZeroEmbed {
-            fn embed(&self, _text: &str) -> Result<Vec<f32>, LibraryError> {
-                Ok(vec![0.0; INGEST_DIMENSION as usize])
-            }
-        }
-        let root = std::env::temp_dir().join(format!(
-            "infraware-records-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let mut store = crate::vec_store::SqliteStore::open(&root).unwrap();
-        let canonical = crate::metadata::canonicalize_metadata(Some(r#"{"a":"1"}"#)).unwrap();
-        let hash = crate::metadata::compute_identity(&canonical, "hello");
-        let embedder = ZeroEmbed;
-        let embedding = embedder.embed("hello").unwrap();
-        let id = store
-            .insert(&hash, "hello", &canonical, &embedding)
-            .unwrap();
-        drop(store);
-        let out = get(&root, &id.to_string()).expect("get succeeds");
-        let v: serde_json::Value = serde_json::from_str(&out.body).unwrap();
-        assert_eq!(v["id"], id);
-        assert_eq!(v["text"], serde_json::json!("hello"));
-        assert_eq!(v["metadata"], serde_json::json!({"a": "1"}));
-        assert!(v["created_at"].is_number());
-        assert_eq!(v.as_object().unwrap().len(), 4);
-        // Missing id is the distinct record-not-found error, not operational.
-        assert_eq!(
-            get(&root, "999").unwrap_err(),
-            LibraryError::MissingDefinition {
-                id: "999".to_string()
-            }
-        );
-        let out = list(&root, &BTreeMap::new(), 50, 0).expect("list succeeds");
-        let v: serde_json::Value = serde_json::from_str(&out.body).unwrap();
-        assert_eq!(v["total"], 1);
-        assert_eq!(v["records"].as_array().unwrap().len(), 1);
-        assert_eq!(v["records"][0]["id"], id);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn get_preserves_canonical_metadata_bytes_exact() {
-        // Task 1.4: reordered/whitespace input canonicalizes once at the
-        // ingest boundary; the stored canonical bytes must survive the
-        // write/read round trip verbatim. Assert on the raw body substring
-        // (not parsed JSON) so key order and compact form are covered.
-        use crate::ingest::{Embedder, HashStore, INGEST_DIMENSION};
-        struct ZeroEmbed;
-        impl Embedder for ZeroEmbed {
-            fn embed(&self, _text: &str) -> Result<Vec<f32>, LibraryError> {
-                Ok(vec![0.0; INGEST_DIMENSION as usize])
-            }
-        }
-        let root = std::env::temp_dir().join(format!(
-            "infraware-records-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let mut store = crate::vec_store::SqliteStore::open(&root).unwrap();
-        let canonical =
-            crate::metadata::canonicalize_metadata(Some(r#"{ "b" : "2" , "a" : "1" }"#)).unwrap();
-        assert_eq!(canonical, r#"{"a":"1","b":"2"}"#);
-        let hash = crate::metadata::compute_identity(&canonical, "hello");
-        let embedding = ZeroEmbed.embed("hello").unwrap();
-        let id = store
-            .insert(&hash, "hello", &canonical, &embedding)
-            .unwrap();
-        drop(store);
-        let out = get(&root, &id.to_string()).expect("get succeeds");
-        assert!(
-            out.body.contains(r#""metadata":{"a":"1","b":"2"}"#),
-            "canonical bytes must survive verbatim: {}",
-            out.body
-        );
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

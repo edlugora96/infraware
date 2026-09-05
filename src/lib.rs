@@ -21,9 +21,7 @@ mod dispatch;
 mod embed;
 mod error;
 mod format;
-mod identity;
 mod ingest;
-mod metadata;
 mod model_cache;
 mod parser;
 mod patch;
@@ -37,7 +35,6 @@ pub use command::Command;
 pub use dispatch::{DispatchOutput, dispatch};
 pub use error::LibraryError;
 pub use format::OutputFormat;
-pub use identity::validate_id;
 pub use parser::parse_args;
 
 use std::io::{self, Write};

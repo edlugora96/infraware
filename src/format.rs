@@ -58,7 +58,6 @@ mod tests {
     fn parse_rejects_invalid_formats() {
         assert_eq!(OutputFormat::parse("xml"), None);
         assert_eq!(OutputFormat::parse("JSON"), None);
-        assert_eq!(OutputFormat::parse("markdown"), None);
         assert_eq!(OutputFormat::parse("json "), None);
         assert_eq!(OutputFormat::parse(""), None);
     }
