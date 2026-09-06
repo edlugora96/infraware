@@ -348,7 +348,7 @@ where
     })
 }
 
-/// Parse `remove <ID>`.
+/// Parse `remove <ID> --entity rules|tasks`.
 fn parse_remove<'a, I>(iter: &mut I) -> Result<Command, LibraryError>
 where
     I: Iterator<Item = &'a String>,
@@ -356,12 +356,86 @@ where
     let id = iter.next().ok_or_else(|| LibraryError::InvalidInput {
         message: "remove requires an <ID>".to_string(),
     })?;
-
+    let flag = iter.next().ok_or_else(|| LibraryError::InvalidInput {
+        message: "remove requires --entity rules|tasks".to_string(),
+    })?;
+    if flag != "--entity" {
+        return Err(LibraryError::InvalidInput {
+            message: "remove requires --entity rules|tasks".to_string(),
+        });
+    }
+    let entity = match iter.next().map(String::as_str) {
+        Some("rules") => Entity::Rules,
+        Some("tasks") => Entity::Tasks,
+        Some(value) => {
+            return Err(LibraryError::InvalidInput {
+                message: format!("invalid remove entity: {value}"),
+            });
+        }
+        None => {
+            return Err(LibraryError::InvalidInput {
+                message: "remove requires --entity rules|tasks".to_string(),
+            });
+        }
+    };
     if iter.next().is_some() {
         return Err(LibraryError::InvalidInput {
             message: "unexpected extra argument for remove".to_string(),
         });
     }
 
-    Ok(Command::Remove { id: id.clone() })
+    Ok(Command::Remove {
+        id: id.clone(),
+        entity,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn remove_parses_rules_entity() {
+        let invocation =
+            parse_args(&args(&["remove", "7", "--entity", "rules"])).expect("valid remove command");
+        assert_eq!(
+            invocation.command,
+            Command::Remove {
+                id: "7".into(),
+                entity: Entity::Rules,
+            }
+        );
+    }
+
+    #[test]
+    fn remove_parses_tasks_entity() {
+        let invocation =
+            parse_args(&args(&["remove", "7", "--entity", "tasks"])).expect("valid remove command");
+        assert_eq!(
+            invocation.command,
+            Command::Remove {
+                id: "7".into(),
+                entity: Entity::Tasks,
+            }
+        );
+    }
+
+    #[test]
+    fn remove_rejects_invalid_shapes() {
+        for argv in [
+            vec!["remove", "7"],
+            vec!["remove", "7", "--entity", "RULES"],
+            vec!["remove", "7", "tasks", "--entity"],
+            vec!["remove", "7", "--entity", "rules", "extra"],
+        ] {
+            assert!(
+                parse_args(&args(&argv)).is_err(),
+                "unexpectedly accepted {argv:?}"
+            );
+        }
+    }
 }

@@ -60,8 +60,37 @@ pub(crate) struct GroupedTask {
     pub(crate) updated_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoveFailureStage {
+    Validation,
+    RelationDeletion,
+    OrphanDetection,
+    TaskVectorCleanup,
+    RuleVectorCleanup,
+    CommitPreparation,
+}
+
+#[cfg(test)]
+fn fail_remove_at(
+    configured: Option<RemoveFailureStage>,
+    stage: RemoveFailureStage,
+) -> Result<(), LibraryError> {
+    if configured == Some(stage) {
+        Err(er("injected remove failure"))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(test))]
+fn fail_remove_at(_: RemoveFailureStage) -> Result<(), LibraryError> {
+    Ok(())
+}
+
 pub(crate) struct SqliteStore {
     conn: rusqlite::Connection,
+    #[cfg(test)]
+    remove_failure: Option<RemoveFailureStage>,
 }
 impl SqliteStore {
     pub(crate) fn open(r: &Path) -> Result<Self, LibraryError> {
@@ -70,6 +99,8 @@ impl SqliteStore {
         crate::vec_shim::ensure_registered();
         let mut s = Self {
             conn: rusqlite::Connection::open(path(r)).map_err(er)?,
+            #[cfg(test)]
+            remove_failure: None,
         };
         if fresh {
             s.init()?;
@@ -99,6 +130,8 @@ impl SqliteStore {
         crate::vec_shim::ensure_registered();
         let s = Self {
             conn: rusqlite::Connection::open(path(r)).map_err(er)?,
+            #[cfg(test)]
+            remove_failure: None,
         };
         s.verify_query_compatible()?;
         Ok(s)
@@ -119,6 +152,8 @@ impl SqliteStore {
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
             )
             .map_err(er)?,
+            #[cfg(test)]
+            remove_failure: None,
         };
         s.verify_query_compatible()?;
         Ok(s)
@@ -503,19 +538,109 @@ impl SqliteStore {
         Ok((tasks, rules))
     }
 
-    pub(crate) fn remove_record(&mut self, id: i64) -> Result<(), LibraryError> {
+    #[cfg(test)]
+    fn set_remove_failure(&mut self, stage: RemoveFailureStage) {
+        self.remove_failure = Some(stage);
+    }
+
+    pub(crate) fn remove_record(
+        &mut self,
+        entity: crate::command::Entity,
+        id: i64,
+    ) -> Result<(), LibraryError> {
+        let (table, key, vec_table, relation_key) = match entity {
+            crate::command::Entity::Rules => ("rules", "rule_id", "rule_vecs", "rule_id"),
+            crate::command::Entity::Tasks => ("tasks", "task_id", "task_vecs", "task_id"),
+        };
+        #[cfg(test)]
+        let remove_failure = self.remove_failure;
         let tx = self.conn.transaction().map_err(er)?;
-        tx.execute("DELETE FROM task_rule_relations WHERE task_id=?1", [id])
+        fail_remove_at(
+            #[cfg(test)]
+            remove_failure,
+            RemoveFailureStage::Validation,
+        )?;
+        let exists: Option<i64> = tx
+            .query_row(
+                &format!("SELECT {key} FROM {table} WHERE {key}=?1"),
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
             .map_err(er)?;
-        tx.execute("DELETE FROM task_vecs WHERE rowid=?1", [id])
+        if exists.is_none() {
+            return Err(LibraryError::MissingDefinition { id: id.to_string() });
+        }
+        let linked_task_ids = if matches!(entity, crate::command::Entity::Rules) {
+            let mut statement = tx
+                .prepare("SELECT task_id FROM task_rule_relations WHERE rule_id=?1")
+                .map_err(er)?;
+            statement
+                .query_map([id], |row| row.get::<_, i64>(0))
+                .map_err(er)?
+                .map(|row| row.map_err(er))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
+        fail_remove_at(
+            #[cfg(test)]
+            remove_failure,
+            RemoveFailureStage::RelationDeletion,
+        )?;
+        tx.execute(
+            &format!("DELETE FROM task_rule_relations WHERE {relation_key}=?1"),
+            [id],
+        )
+        .map_err(er)?;
+
+        if matches!(entity, crate::command::Entity::Rules) {
+            for task_id in linked_task_ids {
+                fail_remove_at(
+                    #[cfg(test)]
+                    remove_failure,
+                    RemoveFailureStage::OrphanDetection,
+                )?;
+                let has_relations: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM task_rule_relations WHERE task_id=?1)",
+                        [task_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(er)?;
+                if !has_relations {
+                    fail_remove_at(
+                        #[cfg(test)]
+                        remove_failure,
+                        RemoveFailureStage::TaskVectorCleanup,
+                    )?;
+                    tx.execute("DELETE FROM task_vecs WHERE rowid=?1", [task_id])
+                        .map_err(er)?;
+                    tx.execute("DELETE FROM tasks WHERE task_id=?1", [task_id])
+                        .map_err(er)?;
+                }
+            }
+        }
+
+        fail_remove_at(
+            #[cfg(test)]
+            remove_failure,
+            RemoveFailureStage::RuleVectorCleanup,
+        )?;
+        tx.execute(&format!("DELETE FROM {vec_table} WHERE rowid=?1"), [id])
             .map_err(er)?;
         if tx
-            .execute("DELETE FROM tasks WHERE task_id=?1", [id])
+            .execute(&format!("DELETE FROM {table} WHERE {key}=?1"), [id])
             .map_err(er)?
             != 1
         {
             return Err(LibraryError::MissingDefinition { id: id.to_string() });
-        };
+        }
+        fail_remove_at(
+            #[cfg(test)]
+            remove_failure,
+            RemoveFailureStage::CommitPreparation,
+        )?;
         tx.commit().map_err(er)
     }
     pub(crate) fn revise(
@@ -744,6 +869,40 @@ mod tests {
     }
 
     #[test]
+    fn removal_keeps_existing_explicit_schema_unchanged() {
+        let p = root();
+        let store = SqliteStore::open(&p).unwrap();
+        let schema_version: String = store
+            .conn
+            .query_row(
+                "SELECT value FROM model_meta WHERE key='schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(schema_version, "1");
+        let relation_sql: String = store
+            .conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='task_rule_relations'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            !relation_sql
+                .to_ascii_uppercase()
+                .contains("ON DELETE CASCADE")
+        );
+        assert!(relation_sql.contains("REFERENCES tasks"));
+        assert!(relation_sql.contains("REFERENCES rules"));
+        drop(store);
+        let reopened = SqliteStore::open_existing_rw(&p).unwrap();
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
+    #[test]
     fn fresh_owner_columns_are_nullable() {
         let p = root();
         let s = SqliteStore::open(&p).unwrap();
@@ -860,6 +1019,409 @@ mod tests {
 
         drop(store);
         let _ = std::fs::remove_dir_all(p);
+    }
+
+    #[test]
+    fn remove_record_selects_typed_entity_branch() {
+        let p = root();
+        let mut store = SqliteStore::open(&p).unwrap();
+        for (table, id, text) in [
+            ("rules", 1_i64, "rule"),
+            ("rules", 2_i64, "other rule"),
+            ("rules", 3_i64, "empty rule"),
+            ("tasks", 2_i64, "task"),
+            ("tasks", 3_i64, "exclusive task"),
+            ("tasks", 4_i64, "unlinked task"),
+        ] {
+            store
+                .conn
+                .execute(
+                    &format!(
+                        "INSERT INTO {table}({}_id,text,created_at,updated_at) VALUES(?1,?2,0,NULL)",
+                        if table == "rules" { "rule" } else { "task" }
+                    ),
+                    rusqlite::params![id, text],
+                )
+                .unwrap();
+        }
+        store
+            .conn
+            .execute(
+                "INSERT INTO task_rule_relations(task_id,rule_id,created_at) VALUES(2,1,0),(2,2,0),(3,1,0)",
+                [],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO task_vecs(rowid,embedding) VALUES(2,?1),(3,?1),(4,?1)",
+                [vec![0_u8; 1536]],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO rule_vecs(rowid,embedding) VALUES(1,?1),(2,?1)",
+                [vec![0_u8; 1536]],
+            )
+            .unwrap();
+
+        store
+            .remove_record(crate::command::Entity::Rules, 1)
+            .unwrap();
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM rules WHERE rule_id=1", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        let missing = store.remove_record(crate::command::Entity::Rules, 99);
+        assert_eq!(
+            missing,
+            Err(LibraryError::MissingDefinition { id: "99".into() })
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM rules WHERE rule_id=2", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM tasks WHERE task_id=2", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM tasks WHERE task_id=3", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM task_vecs WHERE rowid=3", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM task_rule_relations WHERE task_id=2 AND rule_id=2",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+
+        store
+            .remove_record(crate::command::Entity::Tasks, 2)
+            .unwrap();
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM tasks WHERE task_id=2", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM task_vecs WHERE rowid=2", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM task_rule_relations WHERE task_id=2",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM rules WHERE rule_id=2", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM rule_vecs WHERE rowid=2", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        store
+            .remove_record(crate::command::Entity::Rules, 3)
+            .unwrap();
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM rules WHERE rule_id=3", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        store
+            .remove_record(crate::command::Entity::Tasks, 4)
+            .unwrap();
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM tasks WHERE task_id=4", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM task_vecs WHERE rowid=4", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
+    #[test]
+    fn removal_uses_entity_when_task_and_rule_ids_collide() {
+        let p = root();
+        let mut store = SqliteStore::open(&p).unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO rules(rule_id,text,created_at,updated_at) VALUES(1,'rule',0,NULL)",
+                [],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO tasks(task_id,text,created_at,updated_at) VALUES(1,'task',0,NULL)",
+                [],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO task_rule_relations(task_id,rule_id,created_at) VALUES(1,1,0)",
+                [],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO task_vecs(rowid,embedding) VALUES(1,?1)",
+                [vec![0_u8; 1536]],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO rule_vecs(rowid,embedding) VALUES(1,?1)",
+                [vec![0_u8; 1536]],
+            )
+            .unwrap();
+
+        store
+            .remove_record(crate::command::Entity::Tasks, 1)
+            .unwrap();
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM rules WHERE rule_id=1", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM task_vecs WHERE rowid=1", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        store
+            .remove_record(crate::command::Entity::Rules, 1)
+            .unwrap();
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM rule_vecs WHERE rowid=1", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
+    #[test]
+    fn injected_remove_failures_roll_back_every_stage() {
+        for stage in [
+            RemoveFailureStage::Validation,
+            RemoveFailureStage::RelationDeletion,
+            RemoveFailureStage::OrphanDetection,
+            RemoveFailureStage::TaskVectorCleanup,
+            RemoveFailureStage::RuleVectorCleanup,
+            RemoveFailureStage::CommitPreparation,
+        ] {
+            let p = root();
+            let mut store = SqliteStore::open(&p).unwrap();
+            let embedding = vec![7_u8; 1536];
+            store
+                .conn
+                .execute_batch(
+                    "INSERT INTO rules(rule_id,text,created_at,updated_at) VALUES(1,'rule',10,20);\
+                 INSERT INTO tasks(task_id,text,created_at,updated_at) VALUES(1,'task',11,21);\
+                 INSERT INTO task_rule_relations(task_id,rule_id,created_at) VALUES(1,1,30);",
+                )
+                .unwrap();
+            // Keep both vector fixtures at the schema's required byte length.
+            store
+                .conn
+                .execute(
+                    "INSERT INTO task_vecs(rowid,embedding) VALUES(1,?1)",
+                    [&embedding],
+                )
+                .unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO rule_vecs(rowid,embedding) VALUES(1,?1)",
+                    [&embedding],
+                )
+                .unwrap();
+
+            let before_rule: (i64, String, i64, Option<i64>) = store
+                .conn
+                .query_row(
+                    "SELECT rule_id,text,created_at,updated_at FROM rules WHERE rule_id=1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .unwrap();
+            let before_task: (i64, String, i64, Option<i64>) = store
+                .conn
+                .query_row(
+                    "SELECT task_id,text,created_at,updated_at FROM tasks WHERE task_id=1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .unwrap();
+            let before_relation: (i64, i64, i64) = store
+                .conn
+                .query_row(
+                    "SELECT task_id,rule_id,created_at FROM task_rule_relations",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            let before_task_vector: Vec<u8> = store
+                .conn
+                .query_row("SELECT embedding FROM task_vecs WHERE rowid=1", [], |r| {
+                    r.get::<_, Vec<u8>>(0)
+                })
+                .unwrap();
+            let before_rule_vector: Vec<u8> = store
+                .conn
+                .query_row("SELECT embedding FROM rule_vecs WHERE rowid=1", [], |r| {
+                    r.get::<_, Vec<u8>>(0)
+                })
+                .unwrap();
+
+            store.set_remove_failure(stage);
+            assert!(
+                matches!(
+                    store.remove_record(crate::command::Entity::Rules, 1),
+                    Err(LibraryError::Io { .. })
+                ),
+                "failure stage {stage:?} did not fail"
+            );
+            assert_eq!(
+                store
+                    .conn
+                    .query_row(
+                        "SELECT rule_id,text,created_at,updated_at FROM rules WHERE rule_id=1",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    )
+                    .unwrap(),
+                before_rule
+            );
+            assert_eq!(
+                store
+                    .conn
+                    .query_row(
+                        "SELECT task_id,text,created_at,updated_at FROM tasks WHERE task_id=1",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    )
+                    .unwrap(),
+                before_task
+            );
+            assert_eq!(
+                store
+                    .conn
+                    .query_row(
+                        "SELECT task_id,rule_id,created_at FROM task_rule_relations",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .unwrap(),
+                before_relation
+            );
+            assert_eq!(
+                store
+                    .conn
+                    .query_row("SELECT embedding FROM task_vecs WHERE rowid=1", [], |r| r
+                        .get::<_, Vec<
+                        u8,
+                    >>(
+                        0
+                    ),)
+                    .unwrap(),
+                before_task_vector
+            );
+            assert_eq!(
+                store
+                    .conn
+                    .query_row("SELECT embedding FROM rule_vecs WHERE rowid=1", [], |r| r
+                        .get::<_, Vec<
+                        u8,
+                    >>(
+                        0
+                    ),)
+                    .unwrap(),
+                before_rule_vector
+            );
+            drop(store);
+            std::fs::remove_dir_all(&p).unwrap();
+        }
     }
 
     #[test]

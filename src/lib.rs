@@ -54,7 +54,7 @@ pub const EXIT_USAGE: u8 = 2;
 /// missing or incompatible store, backend errors).
 pub const EXIT_FAILURE: u8 = 1;
 
-const HELP_TEXT: &str = "Usage: infraware <COMMAND>\n\nCommands:\n  ingest <TASK_TEXT> <RULE_TEXT>\n  query <TASK_TEXT>\n  list [LIMIT] [OFFSET]\n  get <ID> [--entity rules|tasks]\n  patch <ID> --text <TEXT> [--entity rules|tasks]\n  remove <ID>\n  status\n  revise <ID> --entity rules|tasks";
+const HELP_TEXT: &str = "Usage: infraware <COMMAND>\n\nCommands:\n  ingest <TASK_TEXT> <RULE_TEXT>\n  query <TASK_TEXT>\n  list [LIMIT] [OFFSET]\n  get <ID> [--entity rules|tasks]\n  patch <ID> --text <TEXT> [--entity rules|tasks]\n  remove <ID> --entity rules|tasks\n  status\n  revise <ID> --entity rules|tasks";
 
 fn write_help<W: Write>(stdout: &mut W) {
     let _ = writeln!(stdout, "{HELP_TEXT}");

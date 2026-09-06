@@ -52,7 +52,11 @@ fn output_json(id: i64) -> String {
 }
 
 /// Execute `remove` against `root`.
-pub(crate) fn run(root: &Path, id_raw: &str) -> Result<DispatchOutput, LibraryError> {
+pub(crate) fn run(
+    root: &Path,
+    id_raw: &str,
+    entity: crate::command::Entity,
+) -> Result<DispatchOutput, LibraryError> {
     // Validate the ID before opening storage or touching the index.
     let id = parse_record_id(id_raw)?;
     // Never creates storage: missing index is the generic operational error.
@@ -61,7 +65,7 @@ pub(crate) fn run(root: &Path, id_raw: &str) -> Result<DispatchOutput, LibraryEr
         Err(LibraryError::UninitializedStorage) => return Err(LibraryError::UninitializedStorage),
         Err(_) => return Err(operational_err()),
     };
-    match store.remove_record(id) {
+    match store.remove_record(entity, id) {
         Ok(()) => Ok(DispatchOutput {
             format: OutputFormat::Json,
             body: output_json(id),
@@ -122,24 +126,22 @@ mod tests {
     fn remove_success_emits_exact_json() {
         let root = tmp_root();
         let id = seed_one(&root);
-        let out = run(&root, &id.to_string()).expect("remove succeeds");
+        let out =
+            run(&root, &id.to_string(), crate::command::Entity::Tasks).expect("remove succeeds");
         assert_eq!(out.body, format!("{{\"id\":{id},\"removed\":true}}"));
         // Repeating removal is record-not-found, not generic failure.
-        let err = run(&root, &id.to_string()).unwrap_err();
+        let err = run(&root, &id.to_string(), crate::command::Entity::Tasks).unwrap_err();
         assert_eq!(err, LibraryError::MissingDefinition { id: id.to_string() });
         assert!(!err.is_usage());
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn remove_missing_storage_is_typed_and_creates_nothing() {
+    fn remove_failures_produce_no_success_output() {
         let root = tmp_root();
-        let err = run(&root, "1").unwrap_err();
+        let err = run(&root, "1", crate::command::Entity::Tasks).unwrap_err();
         assert_eq!(err, LibraryError::UninitializedStorage);
-        assert!(
-            !root.join(".infraware").exists(),
-            "remove must not create storage"
-        );
+        assert!(!root.join(".infraware").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -148,7 +150,7 @@ mod tests {
         // Usage rejection happens before any storage work: no `.infraware`
         // artifact appears even though the root is fresh.
         let root = tmp_root();
-        let err = run(&root, "abc").unwrap_err();
+        let err = run(&root, "abc", crate::command::Entity::Tasks).unwrap_err();
         assert!(err.is_usage());
         assert!(!root.join(".infraware").exists());
         let _ = std::fs::remove_dir_all(&root);

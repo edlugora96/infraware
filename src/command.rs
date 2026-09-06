@@ -28,7 +28,7 @@ pub struct InvocationOptions {
 /// - `list [LIMIT] [OFFSET]`
 /// - `get <ID>`
 /// - `patch <ID> --text <TEXT>`
-/// - `remove <ID>`
+/// - `remove <ID> --entity rules|tasks`
 /// - `status`
 /// - `revise <ID> --entity rules|tasks`
 ///
@@ -74,10 +74,12 @@ pub enum Command {
         /// Entity table to patch.
         entity: Entity,
     },
-    /// `remove <ID>` — semantic search hard delete by positive integer record id.
+    /// `remove <ID> --entity rules|tasks` — semantic search hard delete by positive integer record id.
     Remove {
         /// Target record id (validated to a positive integer at execution).
         id: String,
+        /// Entity table to remove from.
+        entity: Entity,
     },
     /// `revise <ID> --entity rules|tasks` — timestamp-only touch.
     Revise {

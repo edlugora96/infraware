@@ -74,10 +74,10 @@ pub fn dispatch(invocation: Invocation, root: &Path) -> Result<DispatchOutput, L
             // or storage I/O, so malformed syntax has usage precedence.
             crate::patch::run(root, &id, text.as_deref(), entity)
         }
-        Command::Remove { id } => {
+        Command::Remove { id, entity } => {
             // Hard delete by positive integer record id. ID shape,
             // storage, and record-not-found rules live in `remove::run`.
-            crate::remove::run(root, &id)
+            crate::remove::run(root, &id, entity)
         }
         Command::Revise { id, entity } => crate::revise::run(root, &id, entity),
     }?;

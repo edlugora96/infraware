@@ -364,6 +364,7 @@ mod tests {
                 assert_eq!(value["id"], if name == "remove" { 3 } else { 4 });
             }
             assert_eq!(render(name, body, OutputFormat::Json, false).unwrap(), body);
+            assert_eq!(render(name, body, OutputFormat::Json, true).unwrap(), body);
         }
     }
 
