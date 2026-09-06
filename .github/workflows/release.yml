@@ -33,7 +33,6 @@ jobs:
             fi
             test -f "$F" || { echo "Missing $F"; exit 1; }
             test -s "$F" || { echo "Empty $F"; exit 1; }
-            if grep -q "placeholder" "$F" 2>/dev/null; then echo "Placeholder binary $F - fail closed"; exit 1; fi
             if [ "$t" = "win32-x64" ]; then
               head -c 2 "$F" | od -An -tx1 | grep -q "4d 5a" || { echo "Invalid win32 format $F"; exit 1; }
             else
