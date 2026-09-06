@@ -70,10 +70,12 @@ fn patch_recomputes_vectors_and_atomically_merges_all_owned_links() {
             "patch outcome evidence missing {required:?}"
         );
     }
-    // Historical rule rows/vectors are intentionally absent from patch/remove
-    // deletion lists, while task-owned links are explicitly cleaned up.
-    assert!(!v.contains("DELETE FROM rules"));
-    assert!(!v.contains("DELETE FROM rule_vecs"));
+    // Removal selects fixed table/vector branches from the typed entity and
+    // applies rule orphan cleanup in the same transaction.
+    assert!(v.contains("Entity::Rules => (\"rules\", \"rule_id\", \"rule_vecs\", \"rule_id\")"));
+    assert!(v.contains("Entity::Tasks => (\"tasks\", \"task_id\", \"task_vecs\", \"task_id\")"));
+    assert!(v.contains("SELECT task_id FROM task_rule_relations WHERE rule_id=?1"));
+    assert!(v.contains("SELECT EXISTS(SELECT 1 FROM task_rule_relations WHERE task_id=?1)"));
 }
 
 #[test]
@@ -100,10 +102,11 @@ fn list_get_and_remove_are_read_only_or_atomic_and_text_only() {
     }
     for required in [
         "open_existing_rw",
-        "DELETE FROM task_rule_relations WHERE task_id=?1",
-        "DELETE FROM task_rule_relations WHERE task_id=?1",
+        "DELETE FROM task_rule_relations WHERE {relation_key}=?1",
         "DELETE FROM task_vecs WHERE rowid=?1",
         "DELETE FROM tasks WHERE task_id=?1",
+        "DELETE FROM {vec_table} WHERE rowid=?1",
+        "DELETE FROM {table} WHERE {key}=?1",
         "tx.commit().map_err(er)",
     ] {
         assert!(

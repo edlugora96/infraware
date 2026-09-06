@@ -47,7 +47,30 @@ fn six_verbs_parse() {
     assert!(
         infraware::parse_args(&["patch".into(), "1".into(), "--text".into(), "x".into()]).is_ok()
     );
-    assert!(infraware::parse_args(&["remove".into(), "1".into()]).is_ok());
+    assert_eq!(
+        infraware::parse_args(&[
+            "remove".into(),
+            "1".into(),
+            "--entity".into(),
+            "rules".into(),
+        ]),
+        Ok(parsed(Command::Remove {
+            id: "1".into(),
+            entity: Entity::Rules,
+        }))
+    );
+    assert_eq!(
+        infraware::parse_args(&[
+            "remove".into(),
+            "1".into(),
+            "--entity".into(),
+            "tasks".into(),
+        ]),
+        Ok(parsed(Command::Remove {
+            id: "1".into(),
+            entity: Entity::Tasks,
+        }))
+    );
 }
 #[test]
 fn invalid_shapes_are_usage_and_silent_on_stdout() {
@@ -61,6 +84,13 @@ fn invalid_shapes_are_usage_and_silent_on_stdout() {
         &["get"],
         &["patch", "1"],
         &["remove"],
+        &["remove", "1", "--entity"],
+        &["remove", "--entity", "1", "rules"],
+        &["remove", "1", "--entity", "rules", "--entity", "tasks"],
+        &["remove", "1", "--entity", "unknown"],
+        &["remove", "1", "--entity", "rules", "extra"],
+        &["remove", "1", "--entity", "RULES"],
+        &["remove", "1", "tasks", "--entity"],
         &["legacy"],
         &["list", "--entity", "rules"],
         &["list", "--entity", "tasks"],

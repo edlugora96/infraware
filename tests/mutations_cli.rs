@@ -141,22 +141,39 @@ fn shared_flag_failures_and_status_missing_store_keep_boundaries() {
 // ---- remove ----
 
 #[test]
-fn remove_missing_id_is_usage() {
+fn remove_invalid_forms_are_usage_before_storage() {
     let cwd = TempCwd::new();
-    assert_usage_rejected(&cwd, &["remove"]);
+    for args in [
+        &["remove"][..],
+        &["remove", "--entity", "1", "rules"],
+        &["remove", "1", "--entity"][..],
+        &["remove", "1", "--entity", "rules", "--entity", "tasks"][..],
+        &["remove", "1", "--entity", "unknown"][..],
+        &["remove", "1", "--entity", "rules", "extra"][..],
+        &["remove", "1", "--entity", "RULES"][..],
+        &["remove", "1", "tasks", "--entity"][..],
+    ] {
+        let (status, stdout, stderr) = exec(args);
+        assert_eq!(status, EXIT_USAGE, "args {args:?} must exit status 2");
+        assert!(stdout.is_empty(), "args {args:?} must leave stdout empty");
+        assert_eq!(stderr.lines().count(), 1, "args {args:?}: {stderr:?}");
+        assert!(stderr.starts_with("error:"), "args {args:?}: {stderr:?}");
+        cwd.assert_no_artifacts();
+    }
 }
 
 #[test]
 fn remove_non_integer_id_is_usage() {
     let cwd = TempCwd::new();
-    assert_usage_rejected(&cwd, &["remove", "abc"]);
+    assert_usage_rejected(&cwd, &["remove", "abc", "--entity", "rules"]);
+    assert_usage_rejected(&cwd, &["remove", "abc", "--entity", "tasks"]);
 }
 
 #[test]
 fn remove_zero_and_negative_ids_are_usage() {
     let cwd = TempCwd::new();
-    assert_usage_rejected(&cwd, &["remove", "0"]);
-    assert_usage_rejected(&cwd, &["remove", "-1"]);
+    assert_usage_rejected(&cwd, &["remove", "0", "--entity", "rules"]);
+    assert_usage_rejected(&cwd, &["remove", "-1", "--entity", "tasks"]);
 }
 
 #[test]
@@ -166,9 +183,10 @@ fn remove_extra_argument_is_usage() {
 }
 
 #[test]
-fn remove_on_missing_storage_is_operational() {
+fn remove_on_missing_storage_is_operational_for_both_entities() {
     let cwd = TempCwd::new();
-    assert_operational_rejected(&cwd, &["remove", "1"]);
+    assert_operational_rejected(&cwd, &["remove", "1", "--entity", "rules"]);
+    assert_operational_rejected(&cwd, &["remove", "1", "--entity", "tasks"]);
     cwd.assert_no_artifacts();
 }
 

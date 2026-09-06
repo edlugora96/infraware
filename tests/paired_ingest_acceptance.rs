@@ -53,11 +53,17 @@ fn lifecycle_is_create_only_for_ingest_and_reads_use_existing_gates() {
 fn pair_relation_and_history_retention_are_explicit() {
     let s = store_source();
     assert!(!s.contains("query_fact_links"));
-    assert!(s.contains("DELETE FROM task_rule_relations WHERE task_id=?1"));
+    assert!(s.contains("DELETE FROM task_rule_relations WHERE {relation_key}=?1"));
+    assert!(s.contains("Entity::Rules => (\"rules\", \"rule_id\", \"rule_vecs\", \"rule_id\")"));
+    assert!(s.contains("Entity::Tasks => (\"tasks\", \"task_id\", \"task_vecs\", \"task_id\")"));
+    assert!(s.contains("SELECT task_id FROM task_rule_relations WHERE rule_id=?1"));
+    assert!(s.contains("SELECT EXISTS(SELECT 1 FROM task_rule_relations WHERE task_id=?1)"));
     assert!(s.contains("DELETE FROM task_vecs WHERE rowid=?1"));
-    // Removal never deletes rules or rule vectors: history is independent.
-    assert!(!s.contains("DELETE FROM rules"));
-    assert!(!s.contains("DELETE FROM rule_vecs"));
+    assert!(s.contains("DELETE FROM tasks WHERE task_id=?1"));
+    assert!(s.contains("DELETE FROM {vec_table} WHERE rowid=?1"));
+    assert!(s.contains("DELETE FROM {table} WHERE {key}=?1"));
+    assert!(!s.contains("REFERENCES tasks(task_id) ON DELETE"));
+    assert!(!s.contains("REFERENCES rules(rule_id) ON DELETE"));
     assert!(s.contains("JOIN task_rule_relations p ON p.rule_id=q.rule_id"));
 }
 

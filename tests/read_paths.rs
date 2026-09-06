@@ -185,7 +185,7 @@ fn all_non_ingest_verbs_report_typed_missing_storage() {
         &["list"][..],
         &["get", "1"][..],
         &["patch", "1", "--text", "changed"][..],
-        &["remove", "1"][..],
+        &["remove", "1", "--entity", "tasks"][..],
         &["status"][..],
         &["revise", "1", "--entity", "rules"][..],
     ] {
