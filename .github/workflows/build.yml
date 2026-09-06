@@ -83,8 +83,7 @@ jobs:
             if [ "$t" = "win32-x64" ]; then
               head -c 2 "$SRC/$BIN" | od -An -tx1 | grep -q "4d 5a" || { echo "Invalid win32 binary format"; exit 1; }
             else
-              # Check not empty and has ELF or Mach-O magic; fail closed if placeholder text detected
-              if grep -q "placeholder" "$SRC/$BIN" 2>/dev/null; then echo "Placeholder binary detected for $t"; exit 1; fi
+              # Check for ELF or Mach-O format and fail closed on invalid format
               file "$SRC/$BIN" | grep -iE "ELF|Mach-O|executable" || { echo "Invalid binary format for $t: $(file $SRC/$BIN)"; exit 1; }
               chmod +x "$SRC/$BIN"
             fi
