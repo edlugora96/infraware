@@ -73,12 +73,12 @@ Commands:
   list [LIMIT] [OFFSET]
   get <ID> [--entity rules|tasks]
   patch <ID> --text <TEXT> [--entity rules|tasks]
-  remove <ID>
+  remove <ID> --entity rules|tasks
   status
   revise <ID> --entity rules|tasks
 ```
 
-`-h`, `-V`, `help`, and command-specific help such as `query --help` are unsupported and return a usage error.
+`remove` deliberately requires the entity selector; the former bare `remove <ID>` form is unsupported and returns a usage error. `-h`, `-V`, `help`, and command-specific help such as `query --help` are unsupported and return a usage error.
 
 The eight verbs use `<project>/.infraware/vec-index.sqlite`.
 

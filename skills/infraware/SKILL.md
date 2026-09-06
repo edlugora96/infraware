@@ -1,6 +1,6 @@
 ---
 name: infraware
-description: 'Use when working on tasks governed by Infraware rules or managing its stored rules and tasks.'
+description: 'Use when working on coding tasks that require clearly defined coding standards or architectural guidelines.'
 ---
 # Infraware
 
