@@ -31,16 +31,15 @@ npm install -g github:edlugora96/infraware#v0.1.0
 
 Requires Node >=18 and valid GitHub auth for the private repo.
 
-### npx (if supported)
+### Install the skill
 
-npm >=7 supports GitHub URL shorthand:
+Install the Infraware skill with:
 
 ```sh
-npx github:edlugora96/infraware --help
-npx github:edlugora96/infraware#v0.1.0 --help
+npx skills add git@github:edlugora96/infraware.git --skill infraware
 ```
 
-If your npm version does not support `npx github:` URLs, use the global install above.
+The repository is private, so you need GitHub access and a configured SSH key.
 
 ### Tags & Versioning
 
@@ -51,7 +50,6 @@ If your npm version does not support `npx github:` URLs, use the global install 
 ### Troubleshooting
 
 - **Auth failures:** verify SSH key `ssh -T git@github.com` or PAT scope/credential helper; for HTTPS ensure PAT not expired.
-- **npx GitHub URL not supported:** upgrade npm (`npm i -g npm`) or use `npm install -g`.
 - **Unsupported platform:** launcher supports `darwin-arm64`, `darwin-x64`, `linux-x64`, `win32-x64` only; others exit with error (deferred).
 
 ### Updating
