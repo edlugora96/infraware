@@ -70,7 +70,7 @@ Commands:
   ingest <TASK_TEXT> <RULE_TEXT>
   query <TASK_TEXT>
   list [LIMIT] [OFFSET]
-  get <ID> [--entity rules|tasks]
+  get <ID> --entity rules|tasks
   patch <ID> --text <TEXT> [--entity rules|tasks]
   remove <ID> --entity rules|tasks
   status
@@ -82,7 +82,9 @@ Commands:
 The eight verbs use `<project>/.infraware/vec-index.sqlite`.
 
 - `ingest <TASK_TEXT> <RULE_TEXT>` stores one task and its paired historical rule. It embeds both raw texts independently, reuses nearby canonical task and rule rows, and returns `task_id`, `rule_id`, `created_at`, and `duplicate` after commit.
-- The v2 store has no user metadata or metadata filters. `list [LIMIT] [OFFSET]` always returns rules and their related tasks. `get <ID> [--entity rules|tasks]` and `patch <ID> --text <TEXT> [--entity rules|tasks]` retain their entity selectors. `list` defaults to a limit of 50 and offset of 0, accepts a maximum limit of 500, and paginates rules only. `total` is the number of rules before pagination.
+- The v2 store has no user metadata or metadata filters. `list [LIMIT] [OFFSET]` always returns rules and their related tasks. `get <ID> --entity rules|tasks` requires an entity selector because task and rule IDs are scoped separately. `patch <ID> --text <TEXT> [--entity rules|tasks]` retains its entity selector. `list` defaults to a limit of 50 and offset of 0, accepts a maximum limit of 500, and paginates rules only. `total` is the number of rules before pagination.
+
+  `get` returns `id`, `text`, `created_at`, and numeric `related_count` in compact YAML and JSON. In detailed mode, a rule includes `tasks` and a task includes `rules`; each related item has `id`, `text`, and `created_at`. Arrays are present as `[]` when no valid related records exist. Related items are ordered by `created_at` ascending, then `id` ascending. Detailed output emits at most 500 related rows, while `related_count` reports the full valid count.
 
   Compact YAML is the default:
 
@@ -108,7 +110,7 @@ The eight verbs use `<project>/.infraware/vec-index.sqlite`.
 
   Pagination applies to rules, not nested tasks. For example, `infraware list 10 20` returns rules 21 through 30 in order and includes every task related to each returned rule.
 
-  `list --entity ...` is no longer accepted and exits with status 2. This is a breaking change. Replace flat `records` parsing with the grouped `rules` array, and read tasks from each rule's `tasks` array. Task pages are no longer available through `list`; callers that need them must process the nested tasks from rule pages.
+  `list --entity ...` is no longer accepted and exits with status 2. This is a breaking change. Replace flat `records` parsing with the grouped `rules` array, and read tasks from each rule's `tasks` array. Task pages are no longer available through `list`; callers that need them must process the nested tasks from rule pages. `get` now requires `--entity rules|tasks` and adds numeric `related_count` to compact output. Consumers using detailed `get` must read the selected entity's `tasks` or `rules` array, including the stable empty array. This is an intentional output compatibility break, not a database change. Roll back the code if needed. Stored rows and relation writes are unchanged; consumers should migrate their parsers to accept the new field and arrays.
 
   ```sh
   infraware list 10 20
