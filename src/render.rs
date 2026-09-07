@@ -145,18 +145,11 @@ fn render_at(
             }
             "status" => {
                 if let Some(o) = v.as_object_mut() {
-                    let st = o
-                        .remove("stale_tasks")
-                        .and_then(|x| x.as_array().map(|a| a.len()))
-                        .unwrap_or(0);
+                    o.remove("stale_tasks");
                     let sr = o
                         .remove("stale_rules")
                         .and_then(|x| x.as_array().map(|a| a.len()))
                         .unwrap_or(0);
-                    o.remove("window_days");
-                    if st > 0 {
-                        o.insert("stale_tasks_count".into(), st.into());
-                    }
                     if sr > 0 {
                         o.insert("stale_rules_count".into(), sr.into());
                     }
@@ -385,24 +378,25 @@ mod tests {
             body
         );
 
-        let status = r#"{"all_up_to_date":false,"window_days":14,"stale_tasks":[{"id":1,"text":"t","last_revised_at":1717934400000}],"stale_rules":[]}"#;
+        let status = r#"{"all_up_to_date":false,"window_days":14,"stale_rules":[{"id":1,"text":"r","last_revised_at":1717934400000}]}"#;
         let status_yaml = render_at("status", status, OutputFormat::Yaml, true, reference).unwrap();
         let status_value: Value = serde_yaml::from_str(&status_yaml).unwrap();
         assert_eq!(
-            status_value["stale_tasks"][0]["last_revised_at"],
+            status_value["stale_rules"][0]["last_revised_at"],
             "last week"
         );
+        assert!(status_value.get("stale_tasks").is_none());
     }
 
     #[test]
     fn status_projection_omits_empty_counts_and_lists() {
         let s = render(
             "status",
-            r#"{"all_up_to_date":true,"window_days":14,"stale_tasks":[],"stale_rules":[]}"#,
+            r#"{"all_up_to_date":true,"window_days":14,"stale_rules":[]}"#,
             OutputFormat::Yaml,
             false,
         )
         .unwrap();
-        assert_eq!(keys(&s), vec!["all_up_to_date"]);
+        assert_eq!(keys(&s), vec!["all_up_to_date", "window_days"]);
     }
 }

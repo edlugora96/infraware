@@ -18,18 +18,8 @@ pub(crate) fn run(root: &Path, settings: Settings) -> Result<DispatchOutput, Lib
         Err(_) => return Err(err()),
     };
     let (tasks, rules) = store.status_rows().map_err(|_| err())?;
-    let mut st = Vec::new();
+    let _ = tasks;
     let mut sr = Vec::new();
-    for r in tasks.iter() {
-        if crate::staleness::stale(r, now, settings.staleness_threshold_days).map_err(|_| err())? {
-            st.push(format!(
-                "{{\"id\":{},\"text\":{},\"last_revised_at\":{}}}",
-                r.id,
-                serde_json::to_string(&r.text).unwrap(),
-                r.updated_at.unwrap_or(r.created_at)
-            ));
-        }
-    }
     for r in rules.iter() {
         if crate::staleness::stale(r, now, settings.staleness_threshold_days).map_err(|_| err())? {
             sr.push(format!(
@@ -41,10 +31,9 @@ pub(crate) fn run(root: &Path, settings: Settings) -> Result<DispatchOutput, Lib
         }
     }
     let body = format!(
-        "{{\"all_up_to_date\":{},\"window_days\":{},\"stale_tasks\":[{}],\"stale_rules\":[{}]}}",
-        st.is_empty() && sr.is_empty(),
+        "{{\"all_up_to_date\":{},\"window_days\":{},\"stale_rules\":[{}]}}",
+        sr.is_empty(),
         settings.staleness_threshold_days,
-        st.join(","),
         sr.join(",")
     );
     Ok(DispatchOutput {
@@ -67,7 +56,7 @@ mod tests {
         ))
     }
     #[test]
-    fn reports_both_entities_with_fixed_shape() {
+    fn reports_rules_only_with_fixed_shape() {
         let p = root();
         let s = crate::vec_store::SqliteStore::open(&p).unwrap();
         let now = SystemTime::now()
@@ -95,11 +84,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(out.body.find("all_up_to_date").unwrap(), 2);
-        assert!(
-            out.body
-                .contains("\"stale_tasks\":[{\"id\":1,\"text\":\"task\",\"last_revised_at\":")
-        );
+        assert!(out.body.contains("\"all_up_to_date\":false"));
+        assert!(!out.body.contains("stale_tasks"));
         assert!(
             out.body
                 .contains("\"stale_rules\":[{\"id\":1,\"text\":\"rule\",\"last_revised_at\":")
