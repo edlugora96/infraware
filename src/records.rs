@@ -41,6 +41,15 @@ pub(crate) struct FetchedRecord {
     pub(crate) text: String,
     pub(crate) created_at: i64,
     pub(crate) entity: Entity,
+    pub(crate) related_count: usize,
+    pub(crate) related: Vec<RelatedRecord>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RelatedRecord {
+    pub(crate) id: i64,
+    pub(crate) text: String,
+    pub(crate) created_at: i64,
 }
 
 /// Render the exact compact text-only `get` JSON:
@@ -49,9 +58,27 @@ pub(crate) struct FetchedRecord {
 /// Field order is fixed; text is preserved byte-exactly.
 fn output_get_json(record: &FetchedRecord) -> String {
     let text = serde_json::to_string(&record.text).expect("record text serialization must succeed");
+    let related = record
+        .related
+        .iter()
+        .map(|r| {
+            format!(
+                "{{\"id\":{},\"text\":{},\"created_at\":{}}}",
+                r.id,
+                serde_json::to_string(&r.text).expect("record text serialization must succeed"),
+                r.created_at
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let key = if record.entity == Entity::Rules {
+        "tasks"
+    } else {
+        "rules"
+    };
     format!(
-        "{{\"id\":{},\"text\":{},\"created_at\":{}}}",
-        record.id, text, record.created_at
+        "{{\"id\":{},\"text\":{},\"created_at\":{},\"related_count\":{},\"{}\":[{}]}}",
+        record.id, text, record.created_at, record.related_count, key, related
     )
 }
 
@@ -94,11 +121,23 @@ fn read_one(
         }
         _ => operational_err(),
     })?;
+    let (related_count, related) = store
+        .related_records(entity, id)
+        .map_err(|_| operational_err())?;
     Ok(FetchedRecord {
         id,
         text,
         created_at,
         entity,
+        related_count,
+        related: related
+            .into_iter()
+            .map(|r| RelatedRecord {
+                id: r.id,
+                text: r.text,
+                created_at: r.created_at,
+            })
+            .collect(),
     })
 }
 
@@ -193,9 +232,13 @@ mod tests {
             text: "canonical".into(),
             created_at: 42,
             entity: Entity::Rules,
+            related_count: 0,
+            related: vec![],
         });
         let value: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(value.as_object().unwrap().len(), 3);
+        assert_eq!(value.as_object().unwrap().len(), 5);
+        assert_eq!(value["related_count"], 0);
+        assert_eq!(value["tasks"], serde_json::json!([]));
         assert_eq!(value["text"], "canonical");
         assert!(value.get("metadata").is_none());
     }

@@ -60,6 +60,12 @@ pub(crate) struct GroupedTask {
     pub(crate) updated_at: Option<i64>,
 }
 
+pub(crate) struct RelatedRecord {
+    pub(crate) id: i64,
+    pub(crate) text: String,
+    pub(crate) created_at: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RemoveFailureStage {
     Validation,
@@ -413,6 +419,40 @@ impl SqliteStore {
             .map_err(er)?
             .ok_or_else(|| LibraryError::MissingDefinition { id: id.to_string() })
     }
+    pub(crate) fn related_records(
+        &self,
+        entity: crate::command::Entity,
+        id: i64,
+    ) -> Result<(usize, Vec<RelatedRecord>), LibraryError> {
+        let (count_sql, rows_sql) = match entity {
+            crate::command::Entity::Rules => (
+                "SELECT count(*) FROM task_rule_relations p JOIN tasks t ON t.task_id=p.task_id WHERE p.rule_id=?1",
+                "SELECT t.task_id,t.text,t.created_at FROM task_rule_relations p JOIN tasks t ON t.task_id=p.task_id WHERE p.rule_id=?1 ORDER BY t.created_at ASC,t.task_id ASC LIMIT 500",
+            ),
+            crate::command::Entity::Tasks => (
+                "SELECT count(*) FROM task_rule_relations p JOIN rules r ON r.rule_id=p.rule_id WHERE p.task_id=?1",
+                "SELECT r.rule_id,r.text,r.created_at FROM task_rule_relations p JOIN rules r ON r.rule_id=p.rule_id WHERE p.task_id=?1 ORDER BY r.created_at ASC,r.rule_id ASC LIMIT 500",
+            ),
+        };
+        let count: i64 = self
+            .conn
+            .query_row(count_sql, [id], |r| r.get(0))
+            .map_err(er)?;
+        let mut statement = self.conn.prepare(rows_sql).map_err(er)?;
+        let records = statement
+            .query_map([id], |r| {
+                Ok(RelatedRecord {
+                    id: r.get(0)?,
+                    text: r.get(1)?,
+                    created_at: r.get(2)?,
+                })
+            })
+            .map_err(er)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(er)?;
+        Ok((usize::try_from(count).map_err(er)?, records))
+    }
+
     pub(crate) fn grouped_rule_page(
         &mut self,
         requested_limit: usize,
@@ -1422,6 +1462,65 @@ mod tests {
             drop(store);
             std::fs::remove_dir_all(&p).unwrap();
         }
+    }
+
+    #[test]
+    fn related_records_are_scoped_ordered_joined_and_capped() {
+        let p = root();
+        let store = SqliteStore::open(&p).unwrap();
+        for (id, created) in [(1, 20), (2, 10), (3, 10)] {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO rules(rule_id,text,created_at) VALUES(?1,?2,?3)",
+                    rusqlite::params![id, format!("rule{id}"), created],
+                )
+                .unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO tasks(task_id,text,created_at) VALUES(?1,?2,?3)",
+                    rusqlite::params![id, format!("task{id}"), created],
+                )
+                .unwrap();
+        }
+        store.conn.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        store.conn.execute("INSERT INTO task_rule_relations(task_id,rule_id,created_at) VALUES (1,1,0),(2,1,0),(3,1,0),(999,1,0)", []).unwrap();
+        store.conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        let (count, rows) = store
+            .related_records(crate::command::Entity::Rules, 1)
+            .unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![2, 3, 1]);
+        let (count, rows) = store
+            .related_records(crate::command::Entity::Tasks, 1)
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(rows[0].id, 1);
+        for id in 4..=503 {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO tasks(task_id,text,created_at) VALUES(?1,?2,?1)",
+                    rusqlite::params![id, format!("task{id}")],
+                )
+                .unwrap();
+            store
+                .conn
+                .execute(
+                    "INSERT INTO task_rule_relations(task_id,rule_id,created_at) VALUES(?1,1,0)",
+                    [id],
+                )
+                .unwrap();
+        }
+        let (count, rows) = store
+            .related_records(crate::command::Entity::Rules, 1)
+            .unwrap();
+        assert_eq!(count, 503);
+        assert_eq!(rows.len(), 500);
+        assert_eq!(rows[0].id, 4);
+        drop(store);
+        let _ = std::fs::remove_dir_all(p);
     }
 
     #[test]

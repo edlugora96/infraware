@@ -16,6 +16,13 @@ fn humanize_field(value: &mut Value, key: &str, reference: DateTime<FixedOffset>
 fn humanize_detailed(value: &mut Value, name: &str, reference: DateTime<FixedOffset>) {
     if matches!(name, "ingest" | "get") {
         humanize_field(value, "created_at", reference);
+        for key in ["tasks", "rules"] {
+            if let Some(items) = value.get_mut(key).and_then(Value::as_array_mut) {
+                for item in items {
+                    humanize_field(item, "created_at", reference);
+                }
+            }
+        }
     }
     if name == "status" {
         for key in ["stale_tasks", "stale_rules"] {
@@ -94,7 +101,7 @@ fn render_at(
     reference: chrono::DateTime<chrono::FixedOffset>,
 ) -> Result<String, LibraryError> {
     if format == OutputFormat::Json {
-        if name != "list" && name != "patch" {
+        if name != "list" && name != "patch" && name != "get" {
             return Ok(body.to_string());
         }
         let mut value: Value = serde_json::from_str(body).map_err(|_| LibraryError::Io {
@@ -102,6 +109,13 @@ fn render_at(
         })?;
         if name == "list" {
             project_list(&mut value, detailed);
+        } else if name == "get" {
+            if !detailed {
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("tasks");
+                    object.remove("rules");
+                }
+            }
         } else if let Some(object) = value.as_object_mut() {
             object.remove("duplicate");
         }
@@ -156,6 +170,12 @@ fn render_at(
                 }
             }
             "list" => project_list(&mut v, false),
+            "get" => {
+                if let Some(o) = v.as_object_mut() {
+                    o.remove("tasks");
+                    o.remove("rules");
+                }
+            }
             _ => {}
         }
     } else {
@@ -250,11 +270,18 @@ mod tests {
     }
     #[test]
     fn get_list_remove_revise_projections_preserve_contracts() {
-        let get_body = r#"{"id":7,"text":"value","created_at":42}"#;
+        let get_body = r#"{"id":7,"text":"value","created_at":42,"related_count":0,"tasks":[]}"#;
         for detailed in [false, true] {
             let yaml = render("get", get_body, OutputFormat::Yaml, detailed).unwrap();
             assert!(yaml.ends_with('\n'));
-            assert_eq!(keys(&yaml), vec!["created_at", "id", "text"]);
+            assert_eq!(
+                keys(&yaml),
+                if detailed {
+                    vec!["created_at", "id", "related_count", "tasks", "text"]
+                } else {
+                    vec!["created_at", "id", "related_count", "text"]
+                }
+            );
             let value: Value = serde_yaml::from_str(&yaml).unwrap();
             assert_eq!(value["id"], 7);
             assert_eq!(value["text"], "value");
@@ -264,8 +291,11 @@ mod tests {
                 assert_eq!(value["created_at"], 42);
             }
         }
-        let json = render("get", get_body, OutputFormat::Json, false).unwrap();
-        assert_eq!(json, get_body);
+        let json: Value =
+            serde_json::from_str(&render("get", get_body, OutputFormat::Json, false).unwrap())
+                .unwrap();
+        assert_eq!(json["related_count"], 0);
+        assert!(json.get("tasks").is_none());
 
         let list_body = r#"{"total":2,"limit":50,"offset":0,"rules":[{"id":1,"text":"rule","created_at":10,"updated_at":null,"tasks":[]},{"id":2,"text":"second","created_at":11,"updated_at":12,"tasks":[{"id":7,"text":"task","created_at":9,"updated_at":null}]}]}"#;
         let yaml_keys = |value: &serde_yaml::Value| {

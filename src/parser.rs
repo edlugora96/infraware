@@ -92,7 +92,23 @@ where
             message: "get requires an <ID>".into(),
         });
     }
-    let entity = parse_entity_option(iter, false, "get")?;
+    let flag = iter.next().ok_or_else(|| LibraryError::InvalidInput {
+        message: "get requires --entity rules|tasks".into(),
+    })?;
+    if flag != "--entity" {
+        return Err(LibraryError::InvalidInput {
+            message: format!("unexpected extra argument for get: {flag}"),
+        });
+    }
+    let value = iter.next().ok_or_else(|| LibraryError::InvalidInput {
+        message: "--entity requires a value".into(),
+    })?;
+    let entity = parse_entity_value(value, "get")?;
+    if iter.next().is_some() {
+        return Err(LibraryError::InvalidInput {
+            message: "duplicate --entity option for get".into(),
+        });
+    }
     Ok(Command::Get {
         id: id.clone(),
         entity,
@@ -109,6 +125,7 @@ fn parse_entity_value(raw: &str, command: &str) -> Result<Entity, LibraryError> 
     }
 }
 
+#[allow(dead_code)]
 fn parse_entity_option<'a, I>(
     iter: &mut I,
     allow_all: bool,
