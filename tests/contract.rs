@@ -38,7 +38,7 @@ fn six_verbs_parse() {
         }))
     );
     assert_eq!(
-        infraware::parse_args(&["get".into(), "1".into()]),
+        infraware::parse_args(&["get".into(), "1".into(), "--entity".into(), "rules".into()]),
         Ok(parsed(Command::Get {
             id: "1".into(),
             entity: Entity::Rules

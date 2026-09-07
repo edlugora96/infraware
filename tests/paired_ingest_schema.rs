@@ -93,7 +93,11 @@ fn incompatible_existing_store_is_unchanged_for_non_ingest() {
         .unwrap();
     let before = fs::read(project.index()).unwrap();
 
-    for args in [&["list"][..], &["query", "anything"][..], &["get", "1"][..]] {
+    for args in [
+        &["list"][..],
+        &["query", "anything"][..],
+        &["get", "1", "--entity", "rules"][..],
+    ] {
         let output = run_in(&project, args);
         assert_eq!(output.status.code(), Some(EXIT_FAILURE as i32));
         assert!(output.stdout.is_empty());

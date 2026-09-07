@@ -183,7 +183,7 @@ fn all_non_ingest_verbs_report_typed_missing_storage() {
     for a in [
         &["query", "task"][..],
         &["list"][..],
-        &["get", "1"][..],
+        &["get", "1", "--entity", "rules"][..],
         &["patch", "1", "--text", "changed"][..],
         &["remove", "1", "--entity", "tasks"][..],
         &["status"][..],

@@ -78,7 +78,7 @@ fn list_get_patch_and_remove_missing_store_are_read_only() {
     for args in [
         &["list"][..],
         &["list", "10", "20"][..],
-        &["get", "1"][..],
+        &["get", "1", "--entity", "rules"][..],
         &["patch", "1", "--text", "replacement"][..],
         &["remove", "1", "--entity", "tasks"][..],
     ] {

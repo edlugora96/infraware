@@ -46,7 +46,7 @@ fn accepted_shapes() {
     for a in [
         vec!["query".into(), "q".into()],
         vec!["list".into()],
-        vec!["get".into(), "1".into()],
+        vec!["get".into(), "1".into(), "--entity".into(), "rules".into()],
         vec![
             "remove".into(),
             "1".into(),
