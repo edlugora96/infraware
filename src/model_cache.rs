@@ -275,7 +275,7 @@ pub(crate) fn ensure_model_files() -> Result<ModelPaths, LibraryError> {
 /// Exposing this is safe: [`validate_final`] performs read-only size/hash
 /// and manifest checks with no FFI, no writes, and no I/O outside the
 /// cache directory reads.
-#[allow(dead_code)] // wired by task 5.2; 5.1 adds the accessor + tests only.
+// Production rule setup calls this accessor from patch::run.
 pub(crate) fn cached_model_files() -> Result<ModelPaths, LibraryError> {
     let dir = cache_dir()?;
     cached_model_files_in(&dir)
@@ -284,7 +284,7 @@ pub(crate) fn cached_model_files() -> Result<ModelPaths, LibraryError> {
 /// Directory-injectable core of [`cached_model_files`]: validate-only, no
 /// fetcher, no network, no mutation. Separated so offline tests can point at
 /// temp dirs without mutating process environment variables.
-#[allow(dead_code)] // wired by task 5.2; 5.1 adds the accessor + tests only.
+// Tests exercise this accessor with temporary directories.
 pub(crate) fn cached_model_files_in(dir: &Path) -> Result<ModelPaths, LibraryError> {
     validate_final(dir)
 }
