@@ -63,8 +63,52 @@ jobs:
             echo "$pack" | node -e 'let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{const p=process.argv[1]; const j=JSON.parse(s); if(!j[0].files.some(f=>f.path===p)) process.exit(1)})' "$path" || { echo "Missing from npm pack: $path"; exit 1; }
           done
 
-  stage:
+  build:
     needs: validate
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: darwin-arm64
+            os: macos-latest
+            rust_target: aarch64-apple-darwin
+          - target: darwin-x64
+            os: macos-latest
+            rust_target: x86_64-apple-darwin
+          - target: linux-x64
+            os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+          - target: win32-x64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+      - name: Build target binary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo build --release --target "${{ matrix.rust_target }}"
+          mkdir -p "binaries/${{ matrix.target }}"
+          if [[ "${{ matrix.target }}" == win32-x64 ]]; then
+            cp "target/${{ matrix.rust_target }}/release/infraware.exe" "binaries/${{ matrix.target }}/infraware.exe"
+          else
+            cp "target/${{ matrix.rust_target }}/release/infraware" "binaries/${{ matrix.target }}/infraware"
+            chmod +x "binaries/${{ matrix.target }}/infraware"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: binaries/${{ matrix.target }}/
+          if-no-files-found: error
+
+  stage:
+    needs: [validate, build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -72,6 +116,11 @@ jobs:
       artifact: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: binaries
+          merge-multiple: true
       - name: Build and verify release assets
         shell: bash
         run: |
@@ -92,12 +141,14 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [validate, stage]
+    needs: [validate, build, stage]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           name: release-assets-${{ inputs.version }}
@@ -114,6 +165,39 @@ jobs:
             echo "Refusing to publish: $TAG already exists. Clean up deliberately before retrying."; exit 1
           fi
           sha256sum -c <(cd dist && sha256sum * | sort)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add binaries/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(release): bundle binaries $TAG [skip ci]"
+            git push origin HEAD:main
+          fi
+          git fetch origin main --tags
+          git checkout --detach origin/main
+          if git show-ref --verify --quiet "refs/tags/$TAG" || git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "Refusing to publish: $TAG already exists. Clean up deliberately before retrying."; exit 1
+          fi
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes dist/infraware-darwin-arm64 dist/infraware-darwin-x64 dist/infraware-linux-x64 dist/infraware-win32-x64.exe dist/checksums.txt
+          gh api --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/$GITHUB_REPOSITORY/releases" \
+            -f "tag_name=$TAG" \
+            -f "target_commitish=$(git rev-parse HEAD)" \
+            -f "name=$TAG" \
+            -F "generate_release_notes=true" \
+            -F "draft=false" \
+            -F "prerelease=false" \
+            > release.json
+          release_id=$(jq -er '.id' release.json)
+          upload_url=$(jq -er '.upload_url' release.json | sed 's/{?name,label}$//')
+          for asset in dist/infraware-darwin-arm64 dist/infraware-darwin-x64 dist/infraware-linux-x64 dist/infraware-win32-x64.exe dist/checksums.txt; do
+            gh api --method POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/octet-stream" \
+              "$upload_url?name=$(basename "$asset")" \
+              --input "$asset" \
+              >/dev/null
+          done
+          test -n "$release_id"
