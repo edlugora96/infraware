@@ -56,6 +56,11 @@ jobs:
           cargo metadata --locked --format-version 1 >/dev/null
           cargo_lock_version=$(cargo metadata --locked --format-version 1 | node -e 'let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s).packages.find(p=>p.name==="infraware"); if (!p) process.exit(1); process.stdout.write(p.version)})')
           [[ "$cargo_lock_version" == "$VERSION" ]] || { echo "Cargo.lock version mismatch: $cargo_lock_version"; exit 1; }
+          mkdir -p release-manifests
+          cp Cargo.toml package.json Cargo.lock release-manifests/
+          test -s release-manifests/Cargo.toml
+          test -s release-manifests/package.json
+          test -s release-manifests/Cargo.lock
           git fetch --tags --force
           if git show-ref --verify --quiet "refs/tags/$TAG"; then
             echo "Tag $TAG already exists locally or remotely"; exit 1
@@ -159,6 +164,14 @@ jobs:
           name: release-assets-${{ inputs.version }}
           path: dist/
           if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-manifests-${{ inputs.version }}
+          path: |
+            Cargo.toml
+            package.json
+            Cargo.lock
+          if-no-files-found: error
 
   publish:
     needs: [validate, build, stage]
@@ -173,6 +186,15 @@ jobs:
         with:
           name: release-assets-${{ inputs.version }}
           path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-manifests-${{ inputs.version }}
+          path: release-manifests
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: binaries-*
+          path: binaries
+          merge-multiple: true
       - name: Recheck and publish release
         shell: bash
         env:
@@ -185,13 +207,19 @@ jobs:
             echo "Refusing to publish: $TAG already exists. Clean up deliberately before retrying."; exit 1
           fi
           (cd dist && sha256sum -c checksums.txt)
+          for file in Cargo.toml package.json Cargo.lock; do
+            test -s "release-manifests/$file" || { echo "Missing release manifest: $file"; exit 1; }
+            cp "release-manifests/$file" "$file"
+          done
+          for file in binaries/darwin-arm64/infraware binaries/darwin-x64/infraware binaries/linux-x64/infraware binaries/win32-x64/infraware.exe; do
+            test -s "$file" || { echo "Missing staged binary: $file"; exit 1; }
+          done
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Cargo.toml package.json Cargo.lock binaries/
-          if ! git diff --cached --quiet; then
-            git commit -m "chore(release): bundle binaries $TAG [skip ci]"
-            git push origin HEAD:main
-          fi
+          git diff --cached --quiet && { echo "Nothing staged for release commit"; exit 1; }
+          git commit -m "chore(release): bundle binaries $TAG [skip ci]"
+          git push origin HEAD:main
           git fetch origin main --tags
           git checkout --detach origin/main
           if git show-ref --verify --quiet "refs/tags/$TAG" || git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
