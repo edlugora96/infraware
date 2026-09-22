@@ -22,8 +22,9 @@ pub struct InvocationOptions {
 
 /// A typed CLI command request.
 ///
-/// Mirrors the exact approved grammar (eight SQLite-backed verbs only):
-/// - `ingest <TASK_TEXT> <RULE_TEXT>`
+/// Mirrors the exact approved grammar (nine SQLite-backed verbs):
+/// - `init`
+/// - `ingest <TASK_TEXT> <RULE_TEXT>
 /// - `query <TASK_TEXT>`
 /// - `list [LIMIT] [OFFSET]`
 /// - `get <ID>`
@@ -32,11 +33,13 @@ pub struct InvocationOptions {
 /// - `status`
 /// - `revise <ID> --entity rules|tasks`
 ///
-/// Removed legacy verbs (`init`, `analyze`, `insert`, `edit`) and aliases
-/// (`set`, `rm`) are not representable here; the parser rejects them as
-/// usage errors before a `Command` is ever built.
+/// Removed legacy verbs (`analyze`, `insert`, `edit`) and aliases (`set`, `rm`)
+/// are not representable here; the parser rejects them as usage errors before a
+/// `Command` is ever built.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    /// `init` - create or verify canonical storage.
+    Init,
     /// `status` - read-only staleness report.
     Status,
     /// `ingest <TASK_TEXT> <RULE_TEXT>` — SQLite write path.
@@ -100,6 +103,7 @@ impl Command {
     /// Human-readable command name, used in diagnostics.
     pub fn name(&self) -> &'static str {
         match self {
+            Command::Init => "init",
             Command::Status => "status",
             Command::Ingest { .. } => "ingest",
             Command::Query { .. } => "query",

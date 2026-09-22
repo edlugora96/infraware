@@ -99,6 +99,17 @@ pub(crate) struct SqliteStore {
     remove_failure: Option<RemoveFailureStage>,
 }
 impl SqliteStore {
+    /// Create the canonical store when absent, or verify an existing store
+    /// through the read-only compatibility path without mutating it.
+    pub(crate) fn initialize(r: &Path) -> Result<(), LibraryError> {
+        if path(r).exists() {
+            let _store = Self::open_read_only(r)?;
+        } else {
+            let _store = Self::open(r)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn open(r: &Path) -> Result<Self, LibraryError> {
         std::fs::create_dir_all(r.join(".infraware")).map_err(er)?;
         let fresh = !path(r).exists();

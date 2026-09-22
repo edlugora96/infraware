@@ -84,6 +84,9 @@ pub(crate) fn render(
     format: OutputFormat,
     detailed: bool,
 ) -> Result<String, LibraryError> {
+    if name == "init" {
+        return Ok(body.to_string());
+    }
     render_at(
         name,
         body,

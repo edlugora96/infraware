@@ -1,6 +1,6 @@
-//! `infraware` — caller-agnostic CLI foundation for the eight SQLite-backed semantic search verbs.
+//! `infraware` — caller-agnostic CLI foundation for the nine SQLite-backed semantic search verbs.
 //!
-//! This crate establishes the single-package Rust boundary for `ingest`,
+//! This crate establishes the single-package Rust boundary for `init`, `ingest`,
 //! `query`, `list`, `get`, `patch`, `remove`, `status`, and `revise` against the SQLite vector
 //! index. It intentionally contains **no** LLM/network/provider/plugin/workspace/
 //! caller-specific code. Everything reachable from the binary goes through one
@@ -54,7 +54,7 @@ pub const EXIT_USAGE: u8 = 2;
 /// missing or incompatible store, backend errors).
 pub const EXIT_FAILURE: u8 = 1;
 
-const HELP_TEXT: &str = "Usage: infraware <COMMAND>\n\nCommands:\n  ingest <TASK_TEXT> <RULE_TEXT>\n  query <TASK_TEXT>\n  list [LIMIT] [OFFSET]\n  get <ID> [--entity rules|tasks]\n  patch <ID> --text <TEXT> [--entity rules|tasks]\n  remove <ID> --entity rules|tasks\n  status\n  revise <ID> --entity rules|tasks";
+const HELP_TEXT: &str = "Usage: infraware <COMMAND>\n\nCommands:\n  init\n  ingest <TASK_TEXT> <RULE_TEXT>\n  query <TASK_TEXT>\n  list [LIMIT] [OFFSET]\n  get <ID> [--entity rules|tasks]\n  patch <ID> --text <TEXT> [--entity rules|tasks]\n  remove <ID> --entity rules|tasks\n  status\n  revise <ID> --entity rules|tasks";
 
 fn write_help<W: Write>(stdout: &mut W) {
     let _ = writeln!(stdout, "{HELP_TEXT}");
@@ -125,7 +125,7 @@ where
             if matches!(&error, LibraryError::UninitializedStorage) {
                 let _ = writeln!(
                     stderr,
-                    "error: canonical storage is not initialized; run `infraware ingest <TASK_TEXT> <RULE_TEXT>` first"
+                    "error: canonical storage is not initialized; run `infraware init` first"
                 );
             } else {
                 let _ = writeln!(stderr, "error: {error}");

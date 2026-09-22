@@ -1,9 +1,9 @@
 //! Stdlib-only exact-argument parser.
 //!
-//! Accepts exactly the approved eight-verb grammar and nothing else. No `clap`
-//! or any external crate is used (design D7). Removed legacy verbs (`init`,
-//! `analyze`, `insert`, `edit`), aliases (`set`, `rm`), and removed legacy
-//! flags (`--format`, `--suggest`) are rejected as usage errors.
+//! Accepts exactly the approved nine-verb grammar and nothing else. No `clap`
+//! or any external crate is used (design D7). Removed legacy verbs (`analyze`,
+//! `insert`, `edit`), aliases (`set`, `rm`), and removed legacy flags
+//! (`--format`, `--suggest`) are rejected as usage errors.
 
 use crate::command::{Command, Entity, Invocation, InvocationOptions};
 use crate::error::LibraryError;
@@ -17,6 +17,11 @@ use crate::format::OutputFormat;
 /// legacy verbs (`init`, `analyze`, `insert`, `edit`), aliases (`set`, `rm`),
 /// and removed legacy flags (`--format`, `--suggest`) are rejected.
 pub fn parse_args(argv: &[String]) -> Result<Invocation, LibraryError> {
+    if argv.first().is_some_and(|arg| arg == "init") && argv.len() != 1 {
+        return Err(LibraryError::InvalidInput {
+            message: "init takes no arguments".into(),
+        });
+    }
     let mut args = argv.to_vec();
     let mut detailed = false;
     if args.last().is_some_and(|x| x == "--detailed") {
@@ -37,6 +42,11 @@ pub fn parse_args(argv: &[String]) -> Result<Invocation, LibraryError> {
         });
     }
     let command = parse_command(&args)?;
+    if matches!(&command, Command::Init) && args.len() != 1 {
+        return Err(LibraryError::InvalidInput {
+            message: "init takes no arguments".into(),
+        });
+    }
     Ok(Invocation {
         command,
         options: InvocationOptions { format, detailed },
@@ -53,6 +63,15 @@ fn parse_command(argv: &[String]) -> Result<Command, LibraryError> {
     };
 
     match command_token.as_str() {
+        "init" => {
+            if iter.next().is_some() {
+                Err(LibraryError::InvalidInput {
+                    message: "init takes no arguments".into(),
+                })
+            } else {
+                Ok(Command::Init)
+            }
+        }
         "status" => {
             if iter.next().is_some() {
                 Err(LibraryError::InvalidInput {

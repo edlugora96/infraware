@@ -35,7 +35,7 @@ pub struct DispatchOutput {
 /// store, record-not-found, backend errors) map to status 1 with empty
 /// stdout and one `error:` line on stderr.
 ///
-/// Exactly the eight SQLite-backed verbs are routed, each to its thin core:
+/// Exactly the nine SQLite-backed verbs are routed, each to its thin core:
 /// - `ingest`/`query` keep their existing SQLite paths.
 /// - `status` reports freshness through its existing read path.
 /// - `list`/`get` read through the approved read-only snapshot lane.
@@ -46,6 +46,13 @@ pub fn dispatch(invocation: Invocation, root: &Path) -> Result<DispatchOutput, L
     let command = invocation.command;
     let name = command.name();
     let mut output = match command {
+        Command::Init => {
+            crate::vec_store::SqliteStore::initialize(root)?;
+            Ok(DispatchOutput {
+                format,
+                body: "initialized canonical storage".into(),
+            })
+        }
         Command::Status => {
             let s = crate::settings::load(root)?;
             crate::status::run(root, s)
