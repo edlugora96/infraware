@@ -10,7 +10,7 @@ description: 'Use before any task or action that requires defined standards, gui
 4. Throughout the session, note possible durable rules from what the user asks, explains, or decides. Skip one-off noise and do not invent candidates.
 5. Every session summary, including maintenance-only sessions, must end with a **Infraware detected rules** section. Give proposed rules and a brief reason for each candidate, or write `None`. Never ingest detected rules automatically; wait for the user's decision.
 
-After the summary, offer relevant maintenance only if useful. Do not start maintenance unasked.
+After the summary, offer relevant maintenance only if `infraware status` reports stale rules. Do not start maintenance unasked.
 
 ## Other flows
 
