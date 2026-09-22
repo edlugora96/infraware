@@ -116,9 +116,23 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-manifests-${{ inputs.version }}
+          path: release-manifests
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
+      - name: Synchronize and verify build version
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for file in Cargo.toml Cargo.lock package.json; do
+            test -s "release-manifests/$file" || { echo "Missing release manifest: $file"; exit 1; }
+            cp "release-manifests/$file" "$file"
+          done
+          cargo_version=$(cargo metadata --locked --format-version 1 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s).packages.find(p=>p.name==="infraware"); if (!p) process.exit(1); process.stdout.write(p.version)})')
+          [[ "$cargo_version" == "$VERSION" ]] || { echo "Cargo metadata version mismatch before build: $cargo_version"; exit 1; }
       - name: Build target binary
         shell: bash
         run: |
@@ -126,11 +140,16 @@ jobs:
           cargo build --release --target "${{ matrix.rust_target }}"
           mkdir -p "binaries/${{ matrix.target }}"
           if [[ "${{ matrix.target }}" == win32-x64 ]]; then
-            cp "target/${{ matrix.rust_target }}/release/infraware.exe" "binaries/${{ matrix.target }}/infraware.exe"
+            binary="target/${{ matrix.rust_target }}/release/infraware.exe"
+            output="binaries/${{ matrix.target }}/infraware.exe"
           else
-            cp "target/${{ matrix.rust_target }}/release/infraware" "binaries/${{ matrix.target }}/infraware"
-            chmod +x "binaries/${{ matrix.target }}/infraware"
+            binary="target/${{ matrix.rust_target }}/release/infraware"
+            output="binaries/${{ matrix.target }}/infraware"
           fi
+          test -s "$binary"
+          grep -aF "infraware $VERSION" "$binary"
+          cp "$binary" "$output"
+          if [[ "${{ matrix.target }}" != win32-x64 ]]; then chmod +x "$output"; fi
       - uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.target }}
