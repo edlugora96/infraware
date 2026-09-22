@@ -184,7 +184,7 @@ jobs:
           if git show-ref --verify --quiet "refs/tags/$TAG" || git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
             echo "Refusing to publish: $TAG already exists. Clean up deliberately before retrying."; exit 1
           fi
-          sha256sum -c <(cd dist && sha256sum * | sort)
+          (cd dist && sha256sum -c checksums.txt)
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Cargo.toml package.json Cargo.lock binaries/
