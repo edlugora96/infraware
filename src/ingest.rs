@@ -8,14 +8,14 @@ use crate::dispatch::DispatchOutput;
 use crate::error::LibraryError;
 use crate::format::OutputFormat;
 
-#[allow(dead_code, unreachable_pub)]
+#[allow(unreachable_pub)]
 pub const INGEST_MODEL: &str = "BAAI/bge-small-en-v1.5";
-#[allow(dead_code, unreachable_pub)]
+#[allow(unreachable_pub)]
 pub const INGEST_MODEL_REVISION: &str = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a";
-#[allow(dead_code, unreachable_pub)]
+#[allow(unreachable_pub)]
 pub const INGEST_DIMENSION: u32 = 384;
 
-#[allow(dead_code, unreachable_pub)]
+#[allow(unreachable_pub)]
 #[derive(Debug)]
 pub struct IngestOutput {
     pub task_id: i64,
@@ -24,7 +24,7 @@ pub struct IngestOutput {
     pub duplicate: bool,
 }
 
-#[allow(dead_code, unreachable_pub)]
+#[allow(unreachable_pub)]
 pub fn output_json(out: &IngestOutput) -> String {
     format!(
         "{{\"task_id\":{},\"rule_id\":{},\"created_at\":{},\"duplicate\":{}}}",
@@ -32,13 +32,13 @@ pub fn output_json(out: &IngestOutput) -> String {
     )
 }
 
-#[allow(dead_code, unreachable_pub)]
+#[allow(unreachable_pub)]
 pub trait HashStore {
     fn find_by_hash(&self, hash: &str) -> Result<Option<i64>, LibraryError>;
     fn insert(&mut self, hash: &str, text: &str, embedding: &[f32]) -> Result<i64, LibraryError>;
 }
 
-#[allow(dead_code, unreachable_pub)]
+#[allow(unreachable_pub)]
 pub trait Embedder {
     fn embed(&self, text: &str) -> Result<Vec<f32>, LibraryError>;
 }
