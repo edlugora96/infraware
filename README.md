@@ -67,6 +67,7 @@ The accepted command grammar is:
 Usage: infraware <COMMAND>
 
 Commands:
+  init
   ingest <TASK_TEXT> <RULE_TEXT>
   query <TASK_TEXT>
   list [LIMIT] [OFFSET]
@@ -79,7 +80,7 @@ Commands:
 
 `remove` deliberately requires the entity selector; the former bare `remove <ID>` form is unsupported and returns a usage error. `-h`, `-V`, `help`, and command-specific help such as `query --help` are unsupported and return a usage error.
 
-The eight verbs use `<project>/.infraware/vec-index.sqlite`.
+The CLI uses the canonical store at `<project>/.infraware/vec-index.sqlite`. Run `infraware init` to create that store explicitly before using read or mutation commands. `init` is idempotent: it succeeds without changing an existing compatible store. If the canonical path exists but is not a usable compatible store, `init` fails safely and does not migrate, repair, replace, or alias it.
 
 - `ingest <TASK_TEXT> <RULE_TEXT>` stores one task and its paired historical rule. It embeds both raw texts independently, reuses nearby canonical task and rule rows, and returns `task_id`, `rule_id`, `created_at`, and `duplicate` after commit.
 - The v2 store has no user metadata or metadata filters. `list [LIMIT] [OFFSET]` always returns rules and their related tasks. `get <ID> --entity rules|tasks` requires an entity selector because task and rule IDs are scoped separately. `patch <ID> --text <TEXT> [--entity rules|tasks]` retains its entity selector. `list` defaults to a limit of 50 and offset of 0, accepts a maximum limit of 500, and paginates rules only. `total` is the number of rules before pagination.
@@ -117,7 +118,7 @@ The eight verbs use `<project>/.infraware/vec-index.sqlite`.
   infraware get 3 --entity tasks
   infraware patch 3 --text "new task" --entity tasks
   ```
-- Only ingest creates a missing store, and it creates a fresh schema with informational `schema_version=1`. The fresh schema includes nullable `updated_at` columns on tasks and rules. Other verbs require an existing usable store created with this schema. A store missing either column is unsupported, and the application does not migrate or repair it. If a non-ingest command cannot find the canonical store, it exits with `error: canonical storage is not initialized; run \`infraware ingest <TASK_TEXT> <RULE_TEXT>\` first`. Non-ingest commands do not auto-initialize, migrate, or repair storage.
+- `init` creates a missing canonical store with informational `schema_version=1`. The fresh schema includes nullable `updated_at` columns on tasks and rules. Running `init` again against a compatible store succeeds without changing it. If the canonical path is unusable or incompatible, `init` fails safely; it does not migrate, repair, replace, or use an alias path. Read and mutation commands require an existing usable canonical store and report an operational error when it is absent. `ingest` keeps its existing lazy initialization behavior, so it may create the missing canonical store when it writes the first pair.
 - `status` reads tasks and rules without changing the store. Tasks are never stale, so status evaluates rule freshness only and derives `all_up_to_date` from stale rules. JSON reports `all_up_to_date`, `window_days`, and `stale_rules`; compact and detailed YAML report the same rule-only staleness and omit task staleness output. Each stale rule contains only `id`, `text`, and `last_revised_at`, an epoch-millisecond timestamp in JSON. `last_revised_at` uses `updated_at` when present and `created_at` otherwise. A rule is stale only when that timestamp is older than the configured window. This is a breaking output-contract change. Status does not create an index or settings file.
 - `revise <ID> --entity rules|tasks` records an explicit revision touch on one existing selected-entity row. It updates only `updated_at`, including when it is `NULL`, and returns `{"id":N,"revised":true}` after the write succeeds. Rule revisions affect the freshness reported by `status`; task revisions update stored timestamps but do not affect staleness. Usage errors, including a missing or unsupported `--entity`, `--text`, duplicate flags, and unknown flags, exit 2 with empty stdout and one usage diagnostic. Missing records and operational failures exit 1 with empty stdout and one `error:` diagnostic. `revise` does not change text, embeddings, vector relations, or entity identity.
 - `query <TASK_TEXT>` searches historical task embeddings, follows task/rule pair relations, and returns nearest tasks first. Query auto-ingest is disabled by default, so a query does not write to the index unless `query_auto_ingest: true` is set.

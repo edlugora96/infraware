@@ -118,10 +118,10 @@ fn entity_selectors_are_scoped_to_entity_verbs() {
 #[test]
 fn rejected_legacy_and_bad_args() {
     for a in [
-        vec!["init".into()],
         vec!["query".into()],
         vec!["get".into(), "1".into(), "x".into()],
         vec!["patch".into(), "1".into(), "--metadata".into(), "{}".into()],
+        vec!["init".into(), "extra".into()],
     ] {
         assert!(infraware::parse_args(&a).unwrap_err().is_usage());
     }

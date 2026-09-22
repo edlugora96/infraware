@@ -179,7 +179,7 @@ fn corrupt_store_stays_generic_and_unchanged() {
 #[test]
 fn all_non_ingest_verbs_report_typed_missing_storage() {
     let p = root();
-    let hint = "error: canonical storage is not initialized; run `infraware ingest <TASK_TEXT> <RULE_TEXT>` first\n";
+    let hint = "error: canonical storage is not initialized; run `infraware init` first\n";
     for a in [
         &["query", "task"][..],
         &["list"][..],
