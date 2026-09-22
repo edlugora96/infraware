@@ -153,7 +153,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.target }}
-          path: binaries/${{ matrix.target }}/
+          path: binaries/
           if-no-files-found: error
 
   stage:
@@ -169,13 +169,16 @@ jobs:
         with:
           pattern: binaries-*
           path: binaries
-          merge-multiple: true
       - name: Build and verify release assets
         shell: bash
         run: |
           set -Eeuo pipefail
           trap 'echo "Staging failed at line $LINENO. Do not retry with an existing tag; inspect and rerun after cleanup." >&2' ERR
           mkdir -p dist
+          for file in binaries/darwin-arm64/infraware binaries/darwin-x64/infraware binaries/linux-x64/infraware binaries/win32-x64/infraware.exe; do
+            test -s "$file" || { echo "Missing staged binary: $file"; exit 1; }
+            grep -aF "infraware $VERSION" "$file" || { echo "Embedded version mismatch: $file"; exit 1; }
+          done
           cp binaries/darwin-arm64/infraware dist/infraware-darwin-arm64
           cp binaries/darwin-x64/infraware dist/infraware-darwin-x64
           cp binaries/linux-x64/infraware dist/infraware-linux-x64
@@ -209,7 +212,6 @@ jobs:
         with:
           pattern: binaries-*
           path: binaries
-          merge-multiple: true
       - name: Recheck and publish release
         shell: bash
         env:
@@ -235,10 +237,12 @@ jobs:
           cargo metadata --locked --format-version 1 >/dev/null
           for file in binaries/darwin-arm64/infraware binaries/darwin-x64/infraware binaries/linux-x64/infraware binaries/win32-x64/infraware.exe; do
             test -s "$file" || { echo "Missing staged binary: $file"; exit 1; }
+            grep -aF "infraware $VERSION" "$file" || { echo "Embedded version mismatch: $file"; exit 1; }
           done
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml package.json Cargo.lock binaries/
+          git add Cargo.toml package.json Cargo.lock
+          git add binaries/darwin-arm64/infraware binaries/darwin-x64/infraware binaries/linux-x64/infraware binaries/win32-x64/infraware.exe
           git diff --cached --quiet && { echo "Nothing staged for release commit"; exit 1; }
           git commit -m "chore(release): bundle binaries $TAG [skip ci]"
           git push origin HEAD:main
