@@ -1,10 +1,23 @@
 name: release
+
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (X.Y.Z)"
+        required: true
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: read
+
+env:
+  VERSION: ${{ inputs.version }}
+  TAG: v${{ inputs.version }}
 
 jobs:
   validate:
@@ -13,87 +26,94 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v5
-      - name: Validate version and targets
+      - name: Validate version, tag state, package, and binaries
+        shell: bash
         run: |
-          set -euo pipefail
-          VERSION=$(grep '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          if [ "$VERSION" != "$PKG_VERSION" ]; then
-            echo "Version mismatch Cargo.toml ($VERSION) vs package.json ($PKG_VERSION)"; exit 1
+          set -Eeuo pipefail
+          trap 'echo "Validation failed at line $LINENO. No repository mutation occurred." >&2' ERR
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid version: $VERSION"; exit 1; }
+          cargo_version=$(sed -nE 's/^version = "([^"]+)"$/\1/p' Cargo.toml | head -1)
+          package_version=$(node -p "require('./package.json').version")
+          [[ "$cargo_version" == "$VERSION" ]] || { echo "Cargo.toml version mismatch: $cargo_version"; exit 1; }
+          [[ "$package_version" == "$VERSION" ]] || { echo "package.json version mismatch: $package_version"; exit 1; }
+          git fetch --tags --force
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            echo "Tag $TAG already exists locally or remotely"; exit 1
           fi
-          TAG=${GITHUB_REF#refs/tags/v}
-          if [ "$TAG" != "$VERSION" ]; then
-            echo "Tag v$TAG does not match version $VERSION"; exit 1
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Remote tag $TAG already exists"; exit 1
+          else
+            remote_status=$?
+            [[ "$remote_status" -eq 2 ]] || { echo "Unable to verify remote tag state"; exit "$remote_status"; }
           fi
-          for t in darwin-arm64 darwin-x64 linux-x64 win32-x64; do
-            if [ "$t" = "win32-x64" ]; then
-              F="binaries/$t/infraware.exe"
+          for target in darwin-arm64 darwin-x64 linux-x64 win32-x64; do
+            if [[ "$target" == win32-x64 ]]; then file_path="binaries/$target/infraware.exe"; else file_path="binaries/$target/infraware"; fi
+            test -s "$file_path" || { echo "Missing or empty $file_path"; exit 1; }
+            if [[ "$target" == win32-x64 ]]; then
+              [[ "$(head -c 2 "$file_path" | od -An -tx1)" =~ 4d[[:space:]]+5a ]] || { echo "Invalid PE format: $file_path"; exit 1; }
             else
-              F="binaries/$t/infraware"
-            fi
-            test -f "$F" || { echo "Missing $F"; exit 1; }
-            test -s "$F" || { echo "Empty $F"; exit 1; }
-            if [ "$t" = "win32-x64" ]; then
-              head -c 2 "$F" | od -An -tx1 | grep -q "4d 5a" || { echo "Invalid win32 format $F"; exit 1; }
-            else
-              file "$F" | grep -iE "ELF|Mach-O|executable" || { echo "Invalid format $F: $(file $F)"; exit 1; }
-              test -x "$F" || { echo "Not executable $F"; exit 1; }
+              file "$file_path" | grep -Eiq 'ELF|Mach-O|executable' || { echo "Invalid platform format: $file_path"; exit 1; }
+              test -x "$file_path" || { echo "Not executable: $file_path"; exit 1; }
             fi
           done
-          # Validate no postinstall/runtime download
-          node -p "const p=require('./package.json'); if(p.scripts&&p.scripts.postinstall) throw new Error('postinstall forbidden')"
-          # Validate npm pack contents
-          PACK_LIST=$(npm pack --dry-run 2>&1 || true)
-          echo "$PACK_LIST"
-          echo "$PACK_LIST" | grep -q "bin/infraware.js" || { echo "launcher missing in pack"; exit 1; }
-          for t in darwin-arm64 darwin-x64 linux-x64 win32-x64; do
-            if [ "$t" = "win32-x64" ]; then F="binaries/$t/infraware.exe"; else F="binaries/$t/infraware"; fi
-            echo "$PACK_LIST" | grep -q "$F" || { echo "binary $F missing in pack"; exit 1; }
+          node -e "const p=require('./package.json'); if (p.scripts?.postinstall || p.scripts?.preinstall) throw new Error('install hooks are forbidden'); if (JSON.stringify(p).match(/(download|install).*(binary|artifact)/i)) throw new Error('runtime download behavior is forbidden')"
+          pack=$(npm pack --dry-run --json)
+          echo "$pack"
+          for path in bin/infraware.js binaries/darwin-arm64/infraware binaries/darwin-x64/infraware binaries/linux-x64/infraware binaries/win32-x64/infraware.exe; do
+            echo "$pack" | node -e 'let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{const p=process.argv[1]; const j=JSON.parse(s); if(!j[0].files.some(f=>f.path===p)) process.exit(1)})' "$path" || { echo "Missing from npm pack: $path"; exit 1; }
           done
-  release:
+
+  stage:
     needs: validate
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v5
-      - name: Generate SHA256 checksums
+      - name: Build and verify release assets
+        shell: bash
         run: |
-          set -euo pipefail
-          {
-            sha256sum binaries/darwin-arm64/infraware
-            sha256sum binaries/darwin-x64/infraware
-            sha256sum binaries/linux-x64/infraware
-            sha256sum binaries/win32-x64/infraware.exe
-          } | sort > checksums.txt
-          cat checksums.txt
-      - name: Verify checksums
-        run: |
-          set -euo pipefail
-          sha256sum -c checksums.txt
-      - name: Stage release assets with unique names
-        run: |
-          set -euo pipefail
+          set -Eeuo pipefail
+          trap 'echo "Staging failed at line $LINENO. Do not retry with an existing tag; inspect and rerun after cleanup." >&2' ERR
           mkdir -p dist
           cp binaries/darwin-arm64/infraware dist/infraware-darwin-arm64
           cp binaries/darwin-x64/infraware dist/infraware-darwin-x64
           cp binaries/linux-x64/infraware dist/infraware-linux-x64
           cp binaries/win32-x64/infraware.exe dist/infraware-win32-x64.exe
-          ls -lh dist/
-          # Preserve root manifest validation for bundled files (fail closed)
-          sha256sum -c checksums.txt
-          # Generate dist manifest with unique basenames and verify fail-closed
-          (cd dist && sha256sum infraware-darwin-arm64 infraware-darwin-x64 infraware-linux-x64 infraware-win32-x64.exe | sort > checksums.txt)
-          cat dist/checksums.txt
-          (cd dist && sha256sum -c checksums.txt)
-          echo "Staged assets:"
-          sha256sum dist/*
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+          (cd dist && sha256sum infraware-darwin-arm64 infraware-darwin-x64 infraware-linux-x64 infraware-win32-x64.exe | sort > checksums.txt && sha256sum -c checksums.txt)
+          test "$(wc -l < dist/checksums.txt)" -eq 4
+      - id: upload
+        uses: actions/upload-artifact@v4
         with:
-          files: |
-            dist/infraware-darwin-arm64
-            dist/infraware-darwin-x64
-            dist/infraware-linux-x64
-            dist/infraware-win32-x64.exe
-            dist/checksums.txt
+          name: release-assets-${{ inputs.version }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: [validate, stage]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets-${{ inputs.version }}
+          path: dist
+      - name: Recheck and publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          trap 'echo "Publication failed. Tag may not have been created. Inspect GitHub before retrying; remove a partial tag/release explicitly, then rerun. Never reuse an existing tag silently." >&2' ERR
+          git fetch --tags --force
+          if git show-ref --verify --quiet "refs/tags/$TAG" || git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "Refusing to publish: $TAG already exists. Clean up deliberately before retrying."; exit 1
+          fi
+          sha256sum -c <(cd dist && sha256sum * | sort)
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes dist/infraware-darwin-arm64 dist/infraware-darwin-x64 dist/infraware-linux-x64 dist/infraware-win32-x64.exe dist/checksums.txt
