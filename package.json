@@ -1,6 +1,6 @@
 {
   "name": "infraware",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Passive, report-only CLI for deterministic offline repository and architecture analysis",
   "bin": {
     "infraware": "./bin/infraware.js"
