@@ -87,6 +87,11 @@ jobs:
           for path in bin/infraware.js binaries/darwin-arm64/infraware binaries/darwin-x64/infraware binaries/linux-x64/infraware binaries/win32-x64/infraware.exe; do
             echo "$pack" | node -e 'let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{const p=process.argv[1]; const j=JSON.parse(s); if(!j[0].files.some(f=>f.path===p)) process.exit(1)})' "$path" || { echo "Missing from npm pack: $path"; exit 1; }
           done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-manifests-${{ inputs.version }}
+          path: release-manifests/
+          if-no-files-found: error
 
   build:
     needs: validate
@@ -164,15 +169,6 @@ jobs:
           name: release-assets-${{ inputs.version }}
           path: dist/
           if-no-files-found: error
-      - uses: actions/upload-artifact@v7
-        with:
-          name: release-manifests-${{ inputs.version }}
-          path: |
-            Cargo.toml
-            package.json
-            Cargo.lock
-          if-no-files-found: error
-
   publish:
     needs: [validate, build, stage]
     runs-on: ubuntu-latest
@@ -211,6 +207,13 @@ jobs:
             test -s "release-manifests/$file" || { echo "Missing release manifest: $file"; exit 1; }
             cp "release-manifests/$file" "$file"
           done
+          cargo_version=$(sed -nE 's/^version = "([^"]+)"$/\1/p' Cargo.toml | head -1)
+          package_version=$(node -p "require('./package.json').version")
+          [[ "$cargo_version" == "$VERSION" && "$package_version" == "$VERSION" ]] || { echo "Manifest version mismatch"; exit 1; }
+          cargo metadata --locked --format-version 1 >/dev/null
+          lock_version=$(cargo metadata --locked --format-version 1 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).packages.find(p=>p.name==="infraware").version))')
+          [[ "$lock_version" == "$VERSION" ]] || { echo "Cargo.lock metadata version mismatch"; exit 1; }
+          cargo metadata --locked --format-version 1 >/dev/null
           for file in binaries/darwin-arm64/infraware binaries/darwin-x64/infraware binaries/linux-x64/infraware binaries/win32-x64/infraware.exe; do
             test -s "$file" || { echo "Missing staged binary: $file"; exit 1; }
           done
