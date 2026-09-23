@@ -2,7 +2,7 @@
 name: infraware
 description: 'Use before starting any task or taking any action to identify applicable standards, guidelines, and constraints.'
 ---
-1. Start each session with `infraware status`.
+1. Start each session with `infraware status` or `infraware init` in case of a new session.
 2. Before each concrete task or step, query a quoted description of that single task: `infraware query "<TASK_TEXT>"`. Repeat or refine the query for other steps or needed coverage. TASK Examples:
     - Create a new Python service named `weather_api`.
     - Note possible durable rules or decisions during the session.
