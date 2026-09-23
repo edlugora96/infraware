@@ -1,6 +1,6 @@
 ---
 name: infraware
-description: 'Use before any task or action that requires defined standards, guidelines, or constraints.'
+description: 'Use before starting any task or taking any action to identify applicable standards, guidelines, and constraints.'
 ---
 # Infraware
 
