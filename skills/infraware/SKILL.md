@@ -7,7 +7,9 @@ description: 'Use before starting any task or taking any action to identify appl
     - Create a new Python service named `weather_api`.
 
 3. Apply every applicable retrieved rule during the work. Respect higher-priority instructions and surface conflicts instead of guessing.
-4. If broader context suggests a chat audit could be useful, end the final report with an **Infraware audit** section. Briefly explain why the engineer may want to use `infraware-audit`, without proposing any rules. Omit the section otherwise. The engineer decides whether to invoke the audit; do not invoke it automatically.
+4. In the final report, include an **Infraware suggestions** section only when at least one of these applies:
+    - If broader context suggests a chat audit could be useful, briefly explain why the engineer may want to use the `infraware-audit` skill, without proposing any rules. The engineer decides whether to invoke the audit; do not invoke it automatically.
+    - If you encounter a missing `infraware` CLI or a missing `infraware-coding`, or `infraware-audit` skill during normal work, suggest that the engineer read [Install and update](references/install-update.md) for guidance. Do not check for missing components solely to populate this section or install anything unasked.
 
 In the final report, offer relevant maintenance only if `infraware status` reports stale rules. Do not start maintenance unasked.
 
@@ -25,5 +27,3 @@ Read the linked reference before executing a matching flow the user requests or 
 - [Inspect stored data](references/audit.md) when the user asks what is stored.
 - [Update or remove a rule or task](references/update.md) when the user requests a record change.
 - [Install and update](references/install-update.md) when the user wants to install or update infraware.
-
-
