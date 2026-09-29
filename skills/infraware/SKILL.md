@@ -9,6 +9,7 @@ description: 'Use before starting any task or taking any action to identify appl
 3. Apply every applicable retrieved rule during the work. Respect higher-priority instructions and surface conflicts instead of guessing.
 4. In the final report, include an **Infraware suggestions** section only when at least one of these applies:
     - If broader context suggests a chat audit could be useful, briefly explain why the engineer may want to use the `infraware-audit` skill, without proposing any rules. The engineer decides whether to invoke the audit; do not invoke it automatically.
+    - If `infraware status` reports stale rules, suggest that the engineer use the `infraware-audit` skill for an optional stored-rules audit. This is a read-only review guided by the engineer's goal, not stale-record maintenance. Do not invoke the audit automatically.
     - If you encounter a missing `infraware` CLI or a missing `infraware-coding`, or `infraware-audit` skill during normal work, suggest that the engineer read [Install and update](references/install-update.md) for guidance. Do not check for missing components solely to populate this section or install anything unasked.
 
 In the final report, offer relevant maintenance only if `infraware status` reports stale rules. Do not start maintenance unasked.
