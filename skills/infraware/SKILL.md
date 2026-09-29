@@ -24,5 +24,6 @@ Read the linked reference before executing a matching flow the user requests or 
 - [Add approved rules](references/ingest.md) when the user agrees to add exact rules.
 - [Inspect stored data](references/audit.md) when the user asks what is stored.
 - [Update or remove a rule or task](references/update.md) when the user requests a record change.
+- [Install and update](references/install-update.md) when the user wants to install or update infraware.
 
 
