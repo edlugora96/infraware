@@ -37,8 +37,8 @@ Install the Infraware skill with:
 
 ```sh
 npx skills add git@github:edlugora96/infraware.git --skill infraware
-npx skills add git@github:edlugora96/infraware.git --skill codebase-rule-proposals
 npx skills add git@github:edlugora96/infraware.git --skill infraware-coding
+npx skills add git@github:edlugora96/infraware.git --skill infraware-audit
 ```
 
 The repository is private, so you need GitHub access and a configured SSH key.
